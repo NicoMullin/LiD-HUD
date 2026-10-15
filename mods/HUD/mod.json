@@ -1,0 +1,31 @@
+{
+  "id": "HUD",
+  "name": "HUD",
+  "description": "The words of LiD HUD's Enemies Left counter (\"Enemies left: 12 / 20\") in every language the game has. The counter itself, and the durability numbers on the weapon bars, are drawn by lid-hud.dll (LiD HUD) - see the readme. Without this mod the counter is in English.",
+  "version": "0.2.1",
+  "author": "KSFA",
+  "category": "Quality of life",
+  "tags": [
+    "hud",
+    "enemies",
+    "durability"
+  ],
+  "game_version": [
+    "5.0.4.1.0 - 1.89",
+    "5.0.4.1.0 - 1.89 (Steam 5.0.4.2.0)",
+    "5.0.4.4.0 - 1.91"
+  ],
+  "requires": [],
+  "conflicts_with": [
+    "Enemies Left"
+  ],
+  "plugin": "lid-hud.dll",
+  "patches": [
+    {
+      "type": "raw_sql",
+      "id": "words",
+      "description": "The Enemies Left counter's words, in every language",
+      "sql": "INSERT OR REPLACE INTO master_text (sct, id, snd, lang, txt, type) SELECT 'TUB', column1, '', column2, column3, 4 FROM (VALUES\n  ('TXT_LID_HUD_ENEMIES', 'int', 'Enemies left: #0 / #1'),\n  ('TXT_LID_HUD_ENEMIES_ALIVE', 'int', 'Enemies left: #0'),\n  ('TXT_LID_HUD_ENEMIES', 'esn', 'Enemigos restantes: #0 / #1'),\n  ('TXT_LID_HUD_ENEMIES_ALIVE', 'esn', 'Enemigos restantes: #0'),\n  ('TXT_LID_HUD_ENEMIES', 'deu', 'Verbleibende Gegner: #0 / #1'),\n  ('TXT_LID_HUD_ENEMIES_ALIVE', 'deu', 'Verbleibende Gegner: #0'),\n  ('TXT_LID_HUD_ENEMIES', 'fra', 'Ennemis restants : #0 / #1'),\n  ('TXT_LID_HUD_ENEMIES_ALIVE', 'fra', 'Ennemis restants : #0'),\n  ('TXT_LID_HUD_ENEMIES', 'ita', 'Nemici rimasti: #0 / #1'),\n  ('TXT_LID_HUD_ENEMIES_ALIVE', 'ita', 'Nemici rimasti: #0'),\n  ('TXT_LID_HUD_ENEMIES', 'ptb', 'Inimigos restantes: #0 / #1'),\n  ('TXT_LID_HUD_ENEMIES_ALIVE', 'ptb', 'Inimigos restantes: #0'),\n  ('TXT_LID_HUD_ENEMIES', 'jpn', '残りの敵：#0 / #1'),\n  ('TXT_LID_HUD_ENEMIES_ALIVE', 'jpn', '残りの敵：#0'),\n  ('TXT_LID_HUD_ENEMIES', 'kor', '남은 적: #0 / #1'),\n  ('TXT_LID_HUD_ENEMIES_ALIVE', 'kor', '남은 적: #0'),\n  ('TXT_LID_HUD_ENEMIES', 'chn', '剩餘敵人：#0 / #1'),\n  ('TXT_LID_HUD_ENEMIES_ALIVE', 'chn', '剩餘敵人：#0'),\n  ('TXT_LID_HUD_ENEMIES', 'kan', '剩余敌人：#0 / #1'),\n  ('TXT_LID_HUD_ENEMIES_ALIVE', 'kan', '剩余敌人：#0'));"
+    }
+  ]
+}
