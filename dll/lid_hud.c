@@ -60,6 +60,8 @@
  *        fighter's health never reads 0).
  * 0.11.2: "only the weapons in hand" taken out - no way was found to tell
  *        which slot a hand has out.
+ * 0.11.3: no code change; the HUD mod in the package switches the plugin
+ *        with itself and lists everything the plugin does.
  *
  * The HUD draws each weapon slot's durability as a bar. The plugin writes the
  * numbers on it - "45/60", "45" or "75%" - in the HUD's own font, through the
