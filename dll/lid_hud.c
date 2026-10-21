@@ -62,6 +62,9 @@
  *        which slot a hand has out.
  * 0.11.3: no code change; the HUD mod in the package switches the plugin
  *        with itself and lists everything the plugin does.
+ * 0.11.4: on the minimap, an escalator's colour disc is left out with its
+ *        icon once it is past the map's edge (the disc is not an icon, so the
+ *        minimap's icon check never saw it, and discs showed far outside).
  *
  * The HUD draws each weapon slot's durability as a bar. The plugin writes the
  * numbers on it - "45/60", "45" or "75%" - in the HUD's own font, through the
@@ -2327,6 +2330,8 @@ static int escalator_colour(void *stage, float x, float y, unsigned char rgb[3])
     return 1;
 }
 
+static int outside_minimap(void *render, float x, float y);
+
 static void draw_escalator_disc(void *part, void *hud, float x, float y)
 {
     static int said;
@@ -2374,8 +2379,12 @@ static void draw_escalator_disc(void *part, void *hud, float x, float y)
     if (!ok)
         return;
 
-    /* drawn by the map's own disc drawing, under the icon */
+    /* drawn by the map's own disc drawing, under the icon - on the minimap
+     * only while the icon is (the disc is not an icon, so the minimap's own
+     * check never sees it) */
     render = object_at(part, L"mMiniMapRender");
+    if (outside_minimap(render, x, y))
+        return;
     if (!(fn = function_of(render, L"RenderCircleBase"))) {
         LOG_ONCE(said, "map: the area map cannot draw discs - escalator colours stay off");
         return;
@@ -3088,6 +3097,18 @@ static void call_with_hud(void *obj, const wchar_t *name, void *hud)
     call_with_object(obj, name, L"inHUD", hud);
 }
 
+/* Is a spot at world (x, y) outside the minimap's square, while the minimap
+ * draws? Icons there are left out, and so are the escalator discs under them,
+ * which the map draws without going through its icons. */
+static int outside_minimap(void *render, float x, float y)
+{
+    float reach = g_mm.cull * 0.94f;
+
+    return reach > 0 && g_mm.map && render == object_at(g_mm.map, L"mMiniMapRender") &&
+           (x < g_mm.centre[0] - reach || x > g_mm.centre[0] + reach || y < g_mm.centre[1] - reach ||
+            y > g_mm.centre[1] + reach);
+}
+
 static void draw_minimap(void *panel, void *hud)
 {
     float *alpha, *map_alpha, *where, *pos, *map_scale, ratio = 0;
@@ -3170,12 +3191,9 @@ static void render_icon_hook(void *render, void *hud, void *image, float x, floa
 {
     void **table = render ? *(void ***)render : NULL;
     render_icon_fn original = NULL;
-    float reach = g_mm.cull * 0.94f;
     int i;
 
-    if (reach > 0 && g_mm.map && render == object_at(g_mm.map, L"mMiniMapRender") &&
-        (x < g_mm.centre[0] - reach || x > g_mm.centre[0] + reach || y < g_mm.centre[1] - reach ||
-         y > g_mm.centre[1] + reach))
+    if (outside_minimap(render, x, y))
         return;
     for (i = 0; i < g_icon_nhooked; i++)
         if (g_icon_hooked[i].table == table)
