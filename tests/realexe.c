@@ -48,6 +48,29 @@ int main(int argc, char **argv)
     show_int("GetDrawTextWidthWithFontState", pc.vt_text_width, pc.vt_text_width);
     show_int("Draw_GaugeLRImage", pc.vt_gauge, pc.vt_gauge);
     show_int("PlayerStatus RenderProcess", pc.vt_status_render, pc.vt_status_render);
+    {
+        int i;
+        for (i = 0; i < GAME_PARTS; i++) {
+            char what[64];
+            snprintf(what, sizeof what, "game part: %ls", GAME_PART[i].name);
+            show_int(what, pc.vt_game[i], pc.vt_game[i]);
+        }
+        int text_slot[TEXTS];
+        text_slots(&pc, text_slot);
+        for (i = 0; i < TEXTS; i++) {
+            char what[64];
+            snprintf(what, sizeof what, "font %s", TEXT[i].name);
+            if (text_slot[i])
+                show_int(what, text_slot[i], text_slot[i]);
+            else
+                printf("  %-46s not found - that text stays where the game puts it\n", what);
+        }
+        for (i = 0; i < DRAWS; i++) {
+            char what[64];
+            snprintf(what, sizeof what, "HUD %s", DRAW[i].name);
+            show_int(what, pc.vt_draw[i], pc.vt_draw[i]);
+        }
+    }
     show_int("PauseMap RenderIconEscalatorUp", pc.vt_esc_up, pc.vt_esc_up);
     show_int("PauseMap RenderIconEscalatorDown", pc.vt_esc_down, pc.vt_esc_down);
     show_int("PredictedProjectileTrajectory SimProjectile", pc.vt_sim_projectile, pc.vt_sim_projectile);

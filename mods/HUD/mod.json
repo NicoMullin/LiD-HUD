@@ -1,8 +1,8 @@
 {
   "id": "HUD",
   "name": "HUD",
-  "description": "Switches lid-hud.dll (LiD HUD) on and off, and writes its Enemies Left counter's words in every language the game has. The plugin adds durability numbers on the weapon bars (with low-durability colours and change pop-ups), the Enemies Left counter, floor info (beasts, mushrooms, chests and materials left, and a Fun Fungus line), rage, bag space, mushroom effect timers, run totals (time, Kill Coins, SP, Bloodnium, EXP, Death Metals, deaths and continues), an always-on minimap, the bow arc, escalator colours on the area map, and hiding the Serial Killer distortion. Press F8 in the game to move, size and set every part - see the readme.",
-  "version": "0.2.1",
+  "description": "Switches lid-hud.dll (LiD HUD) on and off, and writes its Enemies Left counter's words in every language the game has. The plugin adds durability numbers on the weapon bars (with low-durability colours and change pop-ups), the Enemies Left counter, floor info (beasts, mushrooms, chests and materials left, and a Fun Fungus line), rage, bag space, mushroom effect timers, run totals (time, Kill Coins, SP, Bloodnium, EXP, Death Metals, deaths and continues), an always-on minimap, the bow arc, escalator colours on the area map, and hiding the Serial Killer distortion. It can also move, size and hide the game's own HUD parts (health, weapon boxes, decals, quick items, timer, boss health and more). Press F8 in the game to move, size and set every part - see the readme.",
+  "version": "0.2.2",
   "author": "KSFA",
   "category": "Quality of life",
   "tags": [
@@ -20,7 +20,8 @@
   "game_version": [
     "5.0.4.1.0 - 1.89",
     "5.0.4.1.0 - 1.89 (Steam 5.0.4.2.0)",
-    "5.0.4.4.0 - 1.91"
+    "5.0.4.4.0 - 1.91",
+    "5.0.5.0.0 - 1.92"
   ],
   "requires": [],
   "conflicts_with": [

@@ -46,6 +46,12 @@ for the [LiD Plugin Loader](https://github.com/NicoMullin/LiD-Plugin-Loader).
   Read from the game's own gauge.
 - **Layout mode** (0.7.0). Move and size every part in the game itself, and
   (0.8.0) change every setting there too: see below.
+- **The game's own HUD** (0.12.0). Move, size or hide the game's own parts too,
+  in the same layout mode: health and rage, the status notices, each hand's
+  weapon boxes (with their numbers), the decals, the quick items box, the
+  timer, boss health, the floor name, messages, item pick-ups, the reticle,
+  subtitles and the button guide. Parts that are not on the screen get a
+  stand-in box, so they can be placed too.
 
 ## Moving things in the game
 
@@ -73,6 +79,14 @@ colour, the minimap's zoom, the escalator discs, the bow arc and the Serial
 Killer option. Its last group, **This menu**, sets how these pages look: their
 text size, thicker text, and the dark panel behind them.
 
+**The game's own parts** come after ours with Tab, their names starting
+"Game's own". Arrow keys move one, + and - size it, H hides it (it still shows
+while the layout mode is open, to place it) and R puts it back where the game
+has it. Each one shows a box where it was last seen, with its name; one that
+has not been on the screen yet shows a box at a rough guess, marked "not seen
+yet". A part that is on the screen moves with its box, so it can be placed
+against the real thing.
+
 Closing writes everything to `lid-hud.ini` (made if it is not there). While
 the layout mode is open, its keys are kept from the game; every other key still
 works. The enemies counter shows "12 / 20" as a sample where there is nothing
@@ -88,6 +102,15 @@ Everything happens **in memory only**; the exe on disk is never touched.
   for the weapon slots, it reads that slot's durability - now, and at most by
   the game's own `CalcPartParam` - and writes the number only if the bar shows
   exactly that much. It never labels any other bar.
+- The game's own parts (0.12.0) are moved through the HUD's own draw
+  transform: every one of the game's HUD drawing calls passes its corners
+  through it. While a part draws, the transform is set to that part's move and
+  size, on top of any the part sets itself, and put back after. Its text goes
+  through the game's font renderer instead, so each line gets the same move.
+  Two of the game's panels draw several parts each, so their drawing goes to
+  the part for where on the screen it is: health and rage, the status notices
+  and the item box at the top, and along the bottom each hand's weapon boxes
+  in their corners with the decals between them.
 
 Safety rules, all in [dll/lid_hud.c](dll/lid_hud.c):
 
@@ -231,7 +254,20 @@ key=F8              ; the key that opens the layout mode (F1 to F12)
 text_size=100       ; the layout mode's own text, % (80 to 200)
 thick_text=1        ; its text drawn thicker
 panel=1             ; a dark panel behind it (B in the layout mode)
+
+[game_hud]
+health_show=1       ; the game's own parts: shown (1) or hidden (0),
+health_x=0          ; moved from where the game puts it (1920 x 1080 pixels),
+health_y=0
+health_size=100     ; and sized, % (30 to 300), around the middle of the screen
+; the same four for: notices, weapons_left, weapons_right, decals, quick_use,
+; timer, boss_health, floor_title, messages, item_info, reticle, subtitles,
+; button_guide
 ```
+
+The plugin also keeps `<part>_seen` lines and a `seen_version` in
+`[game_hud]`: where each part was seen, for the layout mode's boxes. They need
+no editing.
 
 The counter's words come from the **HUD** mod (in the release zip, under
 `mods\HUD`) in every language the game has; without it they are in English. If

@@ -65,6 +65,17 @@
  * 0.11.4: on the minimap, an escalator's colour disc is left out with its
  *        icon once it is past the map's edge (the disc is not an icon, so the
  *        minimap's icon check never saw it, and discs showed far outside).
+ * 0.12.0: the game's own HUD parts move, size and hide too, in the layout
+ *        mode after ours: health and rage, status notices, left- and
+ *        right-hand weapons, decals, quick items, timer, boss health, floor
+ *        name, messages, item pick-ups, reticle, subtitles and the button
+ *        guide ([game_hud] in lid-hud.ini). Each part's drawing goes through
+ *        the HUD's own draw transform, and its text through the font
+ *        renderer with the same move; the status panel's and the quick use
+ *        panel's by where on the screen each drawing call is, and on top of
+ *        any transform a part sets itself. The layout mode shows a stand-in
+ *        box for every one, where it was last seen (kept as <part>_seen), so
+ *        parts not on the screen can be placed too. Proven in game.
  *
  * The HUD draws each weapon slot's durability as a bar. The plugin writes the
  * numbers on it - "45/60", "45" or "75%" - in the HUD's own font, through the
@@ -374,9 +385,119 @@ struct menu_settings {
 };
 static struct menu_settings g_menu = {100, 1, 1};
 
-/* The layout mode: the part being moved, and when it last changed. */
+/* The game's own HUD parts, each moved, sized or hidden as a whole. Each one
+ * draws itself through its own function (its RenderProcess, or Render); the
+ * plugin wraps that in the HUD's own draw transform, which every one of the
+ * HUD's drawing calls applies to what it draws (see game_part_begin). Their
+ * place is a move from where the game puts them, in 1920 x 1080 pixels, and
+ * their size grows and shrinks around the middle of the screen.
+ *
+ * Two of the game's panels draw parts in several places, so each drawing
+ * call goes to the part for where it is: the player status panel's health and
+ * rage (top left) and status notices (top right) (status_group), the quick
+ * use panel's item box (top) (quick_use_group), and along the bottom, from
+ * either panel, each hand's weapon slots in its corner with the decals
+ * between them (bottom_group). */
+enum { GP_HEALTH, GP_NOTICES, GP_LEFT, GP_RIGHT, GP_DECALS, GP_QUICK, GP_TIMER, GP_BOSS, GP_FLOOR_TITLE, GP_MESSAGES, GP_ITEMS,
+       GP_RETICLE, GP_SUBTITLES, GP_BUTTONS, GAME_PARTS };
+#define GP_STATUS_GROUPS 5      /* the first five are drawn by the status or the quick use panel */
+struct game_part_settings {
+    int show, x, y, size;
+};
+static struct game_part_settings g_gp[GAME_PARTS] = {[0 ... GAME_PARTS - 1] = {1, 0, 0, 100}};
+/* Where each part was last seen drawing, before any move, in 1920 x 1080
+ * pixels - for the layout mode's stand-ins of parts not on the screen. */
+struct part_area {
+    float x1, y1, x2, y2;
+    int seen;
+};
+static struct part_area g_area[GAME_PARTS];
+static const struct {
+    const wchar_t *name;        /* in the layout mode */
+    const wchar_t *key;         /* in lid-hud.ini's [game_hud] */
+    const wchar_t *field;       /* the UI manager's field that holds it */
+    const char *native;         /* its drawing function's native wrapper */
+    float guess[4];             /* a rough place, until it has been seen (1920 x 1080) */
+} GAME_PART[GAME_PARTS] = {
+    {L"Health and rage", L"health", L"mPlayerStatus", "UBrgUIHUD_PlayerStatusexecRenderProcess",
+     {40, 40, 560, 150}},
+    {L"Status notices (top right)", L"notices", L"mPlayerStatus", "UBrgUIHUD_PlayerStatusexecRenderProcess",
+     {1400, 40, 1880, 150}},
+    {L"Left-hand weapons", L"weapons_left", L"mQuickuse", "UBrgUIHUD_QuickUseexecRenderProcess",
+     {40, 860, 560, 1040}},
+    {L"Right-hand weapons", L"weapons_right", L"mQuickuse", "UBrgUIHUD_QuickUseexecRenderProcess",
+     {1360, 860, 1880, 1040}},
+    {L"Decals", L"decals", L"mPlayerStatus", "UBrgUIHUD_PlayerStatusexecRenderProcess", {390, 900, 1530, 1040}},
+    {L"Quick items", L"quick_use", L"mQuickuse", "UBrgUIHUD_QuickUseexecRenderProcess", {1500, 40, 1880, 300}},
+    {L"Timer", L"timer", L"mTimer", "UBrgUIHUD_TimerexecRenderProcess", {840, 40, 1080, 110}},
+    {L"Boss health", L"boss_health", L"mBossHealth", "UBrgUIHUD_BossHealthexecRenderProcess", {560, 60, 1360, 140}},
+    {L"Floor name", L"floor_title", L"mFloorTitle", "UBrgUIHUD_FloorTitleexecRenderProcess", {560, 420, 1360, 560}},
+    {L"Messages", L"messages", L"mMessageWindow", "UBrgUIHUD_MessageWindowexecRender", {1360, 300, 1880, 600}},
+    {L"Item pick-ups", L"item_info", L"mItemInfoManager", "UBrgUIHUD_ItemInfoManagerexecRender",
+     {1360, 620, 1880, 820}},
+    {L"Reticle", L"reticle", L"mRaticle", "UBrgUIHUD_RaticleexecRenderProcess", {920, 500, 1000, 580}},
+    {L"Subtitles", L"subtitles", L"mSubtitle", "UBrgUIHUD_SubtitleexecRenderProcess", {460, 900, 1460, 980}},
+    {L"Button guide", L"button_guide", L"mButtonGuide", "UBrgUIHUD_ButtonGuideexecRenderProcess",
+     {40, 1030, 1880, 1075}},
+};
+
+/* The HUD's drawing calls the game's parts go through (by their native
+ * wrappers' names, "ABrgHUDBaseexec" + name), in the order of the hooks
+ * (draw_hook_0 ...); `image` marks the ones whose third argument is the image
+ * drawn, for its size. Draw_GaugeLRImage has the durability hook already. */
+#define DRAWS 28
+static const struct {
+    const char *name;
+    int image;
+} DRAW[DRAWS] = {
+    {"Draw_Image", 1}, {"Draw_ImageRect", 0}, {"Draw_ExtImage", 0}, {"Draw_ExtImageRect", 0},
+    {"Draw_ModiImage", 0}, {"Draw_ModiImageRect", 0}, {"Draw_RotImage", 0}, {"Draw_RotImageSimple", 0},
+    {"Draw_RotImageRectSimple", 0}, {"Draw_TransformImage", 0}, {"Draw_TransformImageRect", 0},
+    {"Draw_GaugeRLImage", 0}, {"Draw_GaugeBTImage", 0}, {"Draw_GaugeTBImage", 0},
+    {"Draw_GaugeLRImageWithStartEnd", 0}, {"Draw_GaugeBTImageWithStartEnd", 0}, {"Draw_TriangleImage", 0},
+    {"Draw_GradLR", 0}, {"Draw_GradTB", 0}, {"Draw_Box", 0}, {"Draw_LineBox", 0}, {"Draw_NAA_Box", 0},
+    {"Draw_Number", 0}, {"Draw_Str", 0}, {"Draw_NumberEasy", 0}, {"Draw_StrEasy", 0}, {"Draw_BrgStr", 0},
+    {"DrawShadowedText", 0},
+};
+
+/* Along the bottom of the screen, in the game's 3840 x 2160 drawing space:
+ * the weapon slots in each corner, the decals between them. The weapon slots
+ * were seen out to 754 on the left and from 3084 on the right. */
+#define GP_DECALS_X1 780.0f
+#define GP_DECALS_X2 3060.0f
+
+static int bottom_group(float x)
+{
+    return x < GP_DECALS_X1 ? GP_LEFT : x < GP_DECALS_X2 ? GP_DECALS : GP_RIGHT;
+}
+
+/* Which of the status panel's parts a drawing call at (x, y) belongs to: by
+ * the corner it is in, and along the bottom by bottom_group. */
+static int status_group(float x, float y)
+{
+    if (y < 1080)
+        return x < 1920 ? GP_HEALTH : GP_NOTICES;
+    return bottom_group(x);
+}
+
+/* Part `n`'s rectangle `r` (1920 x 1080 pixels, before its move) as its
+ * move and size put it on the screen. */
+static void moved_rect(int n, const float r[4], float out[4])
+{
+    float k = g_gp[n].size / 100.0f;
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        float half = i % 2 ? 540.0f : 960.0f;           /* the middle of the screen */
+        int move = i % 2 ? g_gp[n].y : g_gp[n].x;
+        out[i] = k * (r[i] - half) + half + move;
+    }
+}
+
+/* The layout mode: the part being moved, and when it last changed. The game's
+ * own parts come after ours, from PART_GAME on. */
 enum { PART_DURABILITY, PART_ENEMIES, PART_FLOOR, PART_MINIMAP, PART_RAGE, PART_BAG, PART_EFFECTS, PART_RUN,
-       PARTS };
+       PART_GAME, PARTS = PART_GAME + GAME_PARTS };
 static struct {
     int on, part;
     int item;                   /* 0 the whole part, or one piece of it (1 on) */
@@ -423,6 +544,8 @@ static void read_block(const wchar_t *section, struct block_settings *b, const s
     b->colour = ini_colour(section, L"colour", home->colour, 0);
     b->background = ini_int(section, L"background", 0, 0, 1);
 }
+
+static void read_areas(void);
 
 static void read_settings(void)
 {
@@ -551,6 +674,21 @@ static void read_settings(void)
         }
     }
 
+    {
+        wchar_t key[40];
+        int i;
+        for (i = 0; i < GAME_PARTS; i++) {
+            swprintf(key, 40, L"%ls_show", GAME_PART[i].key);
+            g_gp[i].show = ini_int(L"game_hud", key, 1, 0, 1);
+            swprintf(key, 40, L"%ls_x", GAME_PART[i].key);
+            g_gp[i].x = ini_int(L"game_hud", key, 0, -1920, 1920);
+            swprintf(key, 40, L"%ls_y", GAME_PART[i].key);
+            g_gp[i].y = ini_int(L"game_hud", key, 0, -1080, 1080);
+            swprintf(key, 40, L"%ls_size", GAME_PART[i].key);
+            g_gp[i].size = ini_int(L"game_hud", key, 100, 30, 300);
+        }
+        read_areas();
+    }
     {
         wchar_t key[8];
         int n;
@@ -722,6 +860,8 @@ struct pieces {
     int vt_text, vt_shadow_text, vt_text_width, vt_gauge;   /* function-table slots */
     int vt_shadow_keep;             /* ... the shadow text in the font's own colour */
     int vt_status_render;           /* the player status panel's RenderProcess */
+    int vt_game[GAME_PARTS];        /* each of the game's HUD parts' drawing (0: not found) */
+    int vt_draw[DRAWS];             /* the HUD's drawing calls (DRAW) */
     int vt_esc_up, vt_esc_down;     /* the area map's escalator icons */
     int vt_sim_projectile;          /* the aiming line's simulation */
     void *line_check;               /* UWorld::SingleLineCheck */
@@ -878,6 +1018,16 @@ static void find_pieces(unsigned char *base, struct pieces *pc)
     pc->vt_text_width = wrapper_slot(pc, "UBrgUIFontRenderexecGetDrawTextWidthWithFontState");
     pc->vt_gauge = wrapper_slot(pc, "ABrgHUDBaseexecDraw_GaugeLRImage");
     pc->vt_status_render = wrapper_slot(pc, "UBrgUIHUD_PlayerStatusexecRenderProcess");
+    {
+        char name[64];
+        int i;
+        for (i = 0; i < GAME_PARTS; i++)
+            pc->vt_game[i] = wrapper_slot(pc, GAME_PART[i].native);
+        for (i = 0; i < DRAWS; i++) {
+            snprintf(name, sizeof name, "ABrgHUDBaseexec%s", DRAW[i].name);
+            pc->vt_draw[i] = wrapper_slot(pc, name);
+        }
+    }
     pc->vt_esc_up = wrapper_slot(pc, "UBrgUIMenuPart_PauseMapexecRenderIconEscalatorUp");
     pc->vt_esc_down = wrapper_slot(pc, "UBrgUIMenuPart_PauseMapexecRenderIconEscalatorDown");
     pc->vt_sim_projectile = tail_slot(pc, "UBrgPredictedProjectileTrajectoryexecSimProjectile");
@@ -1300,11 +1450,14 @@ static const unsigned char COLOURS[8][3] = {
  * just put in the font renderer - DrawShadowText_UseImgPos puts the image's own
  * colour back first, its KeepColor twin does not; there is no KeepColor text
  * without a shadow, so for that the shadow is made see-through. */
+static int g_own_text;          /* 1: the text being drawn is ours (for the text hooks) */
+
 static void font_draw(void *state, void *image, struct fstring *str, float x, float y, int own_colour, int shadow)
 {
     unsigned char *shadow_a = value_at(g_font, L"mShadowColorA", 1), keep_a = 0;
     int slot;
 
+    g_own_text = 1;
     if (own_colour && g_pc.vt_shadow_keep && (shadow || shadow_a)) {
         if (!shadow) {
             keep_a = *shadow_a;
@@ -1313,10 +1466,11 @@ static void font_draw(void *state, void *image, struct fstring *str, float x, fl
         ((draw_text_fn)(*(void ***)g_font)[g_pc.vt_shadow_keep / 8])(g_font, state, image, str, 0, x, y, 0, 0);
         if (!shadow)
             *shadow_a = keep_a;
-        return;
+    } else {
+        slot = shadow && g_pc.vt_shadow_text ? g_pc.vt_shadow_text : g_pc.vt_text;
+        ((draw_text_fn)(*(void ***)g_font)[slot / 8])(g_font, state, image, str, 0, x, y, 0, 0);
     }
-    slot = shadow && g_pc.vt_shadow_text ? g_pc.vt_shadow_text : g_pc.vt_text;
-    ((draw_text_fn)(*(void ***)g_font)[slot / 8])(g_font, state, image, str, 0, x, y, 0, 0);
+    g_own_text = 0;
 }
 
 /* Write `text` on the bar `image` that the game just drew at (x, y): in the
@@ -1626,7 +1780,29 @@ static int matches(int cur, int max, float ratio)
     return (d < 0 ? -d : d) < 0.002f;
 }
 
+/* What a drawing call made while one of the game's parts draws put back
+ * after it (draw_enter, draw_leave: with the game's own parts below). */
+struct draw_win {
+    int on;
+    uint32_t was;
+    float keep[6];
+};
+static void draw_enter(void *hud, float x, float y, void *image, struct draw_win *w);
+static void draw_leave(struct draw_win *w);
+static void gauge_body(void *hud, float x, float y, float ratio, void *image);
+
+/* A game part's bar: its corner's move and its area, kept on for the bar and
+ * the numbers drawn on it, so they move together. */
 static void gauge_hook(void *hud, float x, float y, float ratio, void *image)
+{
+    struct draw_win w;
+
+    draw_enter(hud, x, y, image, &w);
+    gauge_body(hud, x, y, ratio, image);
+    draw_leave(&w);
+}
+
+static void gauge_body(void *hud, float x, float y, float ratio, void *image)
 {
     unsigned char *rbp = g_gauge_rbp, *part, *master;
     gauge_fn original = original_gauge(hud);
@@ -2130,6 +2306,850 @@ static void hud_transform_back(uint32_t bit)
         *p |= bit;
 }
 
+/* -------------------------------------------------- the game's own parts */
+
+/* Every one of the HUD's drawing calls (Draw_Image, Draw_GaugeLRImage, ...)
+ * puts each corner it draws through the HUD's draw transform when
+ * mEnableDrawTransformMatrix is on: x' = a x + b y + tx, y' = c x + d y + ty,
+ * with mDrawTransformMatrix = {a, b, tx, c, d, ty} (from the game's code). The
+ * game mostly leaves it off, but some parts set their own while they draw
+ * (the quick use part: its weapon and item icons). While one of the game's
+ * parts draws it is set to that part's move and size, on top of whatever
+ * transform is on; when the part sets its own, each drawing call gets the
+ * move on top of that one, and it is put back after. In the game's
+ * 3840 x 2160 drawing space: the settings' 1920 x 1080 doubled. */
+#define GP_PIVOT_X 1920.0f      /* sizes grow and shrink around the screen's middle */
+#define GP_PIVOT_Y 1080.0f
+#define GP_AWAY 100000.0f       /* a hidden part is drawn this far off the screen */
+
+/* Where the HUD keeps its transform, found once for the HUD's class. */
+static struct {
+    void *cls;
+    ptrdiff_t flag_at, m_at;
+    uint32_t bit;
+} g_tf;
+
+static int transform_fields(void *hud, uint32_t **flag, uint32_t *bit, float **m)
+{
+    void *cls = hud ? class_of(hud) : NULL;
+
+    if (!cls)
+        return 0;
+    if (g_tf.cls != cls) {
+        unsigned char *f = field_of(cls, L"mEnableDrawTransformMatrix"), *fm = field_of(cls, L"mDrawTransformMatrix");
+        g_tf.cls = cls;
+        g_tf.bit = f && fm ? (uint32_t)bool_bit(f) : 0;
+        if (g_tf.bit) {
+            g_tf.flag_at = offset_of(f);
+            g_tf.m_at = offset_of(fm);
+        }
+    }
+    if (!g_tf.bit)
+        return 0;
+    *flag = (uint32_t *)((unsigned char *)hud + g_tf.flag_at);
+    *m = (float *)((unsigned char *)hud + g_tf.m_at);
+    *bit = g_tf.bit;
+    return readable(*flag, 4) && readable(*m, 24);
+}
+
+/* Is part `n` anywhere but where the game puts it? */
+static int part_moved(int n)
+{
+    const struct game_part_settings *g = &g_gp[n];
+    return (!g->show && !g_layout.on) || g->x || g->y || g->size != 100;
+}
+
+/* Part `n`'s transform: its move and size on top of `game` (the transform
+ * that was on, or NULL for none). The layout mode shows hidden parts, to
+ * place them. */
+static void part_matrix(int n, const float *game, float out[6])
+{
+    static const float none[6] = {1, 0, 0, 0, 1, 0};
+    const struct game_part_settings *g = &g_gp[n];
+    const float *e = game ? game : none;
+    float k = g->size / 100.0f;
+    float ox = GP_PIVOT_X * (1 - k) + g->x * 2 + (!g->show && !g_layout.on ? GP_AWAY : 0);
+    float oy = GP_PIVOT_Y * (1 - k) + g->y * 2;
+
+    out[0] = k * e[0];
+    out[1] = k * e[1];
+    out[2] = k * e[2] + ox;
+    out[3] = k * e[3];
+    out[4] = k * e[4];
+    out[5] = k * e[5] + oy;
+}
+
+/* Which part the quick use panel's drawing call at (x, y) is for, in the
+ * game's drawing space: its item box at the top, and each hand's weapons in
+ * their bottom corner. */
+static int quick_use_group(float x, float y)
+{
+    if (y < 1080)
+        return GP_QUICK;
+    return bottom_group(x);
+}
+
+/* What is drawing now: one of the game's parts (-1: none). The player status
+ * panel (GP_HEALTH) and the quick use panel (GP_QUICK) draw several parts,
+ * each drawing call going to the part for its corner. */
+static int g_drawing = -1;
+
+/* The transform while a part draws: as it was before (put back after), and
+ * the one set for a part (`set` = which, -1: none), to tell when the part
+ * changes it. */
+static struct {
+    int ok, set;
+    void *hud;
+    uint32_t *flag, bit, was, mine_on;
+    float *m, keep[6], mine[6];
+} g_frame;
+static int g_draw_depth;        /* inside one of the HUD's drawing calls: the calls it makes go straight on */
+static int g_text_depth;        /* inside one of the font renderer's text calls: the same, for text and drawing
+                                 * (the shadow text calls draw their text through DrawText_UseImgPos) */
+static int g_areas_changed;
+static DWORD g_areas_saved_at;
+
+static void frame_set(int n)
+{
+    if (part_moved(n)) {
+        part_matrix(n, g_frame.was ? g_frame.keep : NULL, g_frame.m);
+        *g_frame.flag |= g_frame.bit;
+    } else {
+        memcpy(g_frame.m, g_frame.keep, sizeof g_frame.keep);
+        if (g_frame.was)
+            *g_frame.flag |= g_frame.bit;
+        else
+            *g_frame.flag &= ~g_frame.bit;
+    }
+    g_frame.set = n;
+    g_frame.mine_on = *g_frame.flag & g_frame.bit;
+    memcpy(g_frame.mine, g_frame.m, sizeof g_frame.mine);
+}
+
+/* Part `n` starts drawing (GP_HEALTH: the status panel, GP_QUICK: the quick
+ * use panel - their parts are set call by call). */
+static void frame_begin(int n, void *hud)
+{
+    g_frame.ok = transform_fields(hud, &g_frame.flag, &g_frame.bit, &g_frame.m);
+    g_frame.set = -1;
+    g_frame.hud = hud;
+    g_drawing = n;
+    if (!g_frame.ok)
+        return;
+    g_frame.was = *g_frame.flag & g_frame.bit;
+    memcpy(g_frame.keep, g_frame.m, sizeof g_frame.keep);
+    if (n != GP_HEALTH && n != GP_QUICK)
+        frame_set(n);
+}
+
+static void frame_end(void)
+{
+    g_drawing = -1;
+    if (!g_frame.ok)
+        return;
+    memcpy(g_frame.m, g_frame.keep, sizeof g_frame.keep);
+    if (g_frame.was)
+        *g_frame.flag |= g_frame.bit;
+    else
+        *g_frame.flag &= ~g_frame.bit;
+    g_frame.ok = 0;
+}
+
+/* A UBrgUIImage's size in the game's drawing space, or 0. */
+static void image_size(void *image, float *w, float *h)
+{
+    static ptrdiff_t at_w = -1, at_h = -1;
+    int32_t *p;
+
+    *w = *h = 0;
+    if (!image || !readable(image, 0x100))
+        return;
+    if (at_w < 0) {
+        unsigned char *fw = field_of(class_of(image), L"mUseSizeX"), *fh = field_of(class_of(image), L"mUseSizeY");
+        if (!fw || !fh)
+            return;
+        at_w = offset_of(fw);
+        at_h = offset_of(fh);
+    }
+    p = (int32_t *)((unsigned char *)image + at_w);
+    if (readable(p, 4) && *p > 0 && *p < 4096)
+        *w = (float)*p;
+    p = (int32_t *)((unsigned char *)image + at_h);
+    if (readable(p, 4) && *p > 0 && *p < 4096)
+        *h = (float)*p;
+}
+
+/* Part `n` drew at (x, y), w x h in the game's drawing space: its area grows
+ * to take it in. */
+static void grow_area(int n, float x, float y, float w, float h)
+{
+    struct part_area *a = &g_area[n];
+    float x1, y1, x2, y2;
+
+    if (!(x > -4000 && x < 8000 && y > -4000 && y < 6000))
+        return;
+    x1 = clamp((int)(x / 2), 0, 1920);
+    y1 = clamp((int)(y / 2), 0, 1080);
+    x2 = clamp((int)((x + w) / 2), 0, 1920);
+    y2 = clamp((int)((y + h) / 2), 0, 1080);
+    if (!a->seen) {
+        a->x1 = x1; a->y1 = y1; a->x2 = x2; a->y2 = y2;
+        a->seen = 1;
+        g_areas_changed = 1;
+        return;
+    }
+    if (x1 < a->x1) { a->x1 = x1; g_areas_changed = 1; }
+    if (y1 < a->y1) { a->y1 = y1; g_areas_changed = 1; }
+    if (x2 > a->x2) { a->x2 = x2; g_areas_changed = 1; }
+    if (y2 > a->y2) { a->y2 = y2; g_areas_changed = 1; }
+}
+
+/* One of the HUD's drawing calls, with where it draws (x, y) and its image
+ * (or NULL), made while one of the game's parts draws: the call's part, its
+ * area, and its move. The part's own transform stays on for the calls it
+ * draws through other ways (its text); when the part has set a transform of
+ * its own, this call gets the move on top of it, put back by draw_leave.
+ * Every draw_enter has its draw_leave. */
+static struct draw_win *g_win;      /* the drawing call whose own move is on now */
+
+/* The transform on now: 1 the one set for a part, 2 the one there before
+ * the part drew, 0 the part's own. */
+static int transform_now(void)
+{
+    int cur_on = (*g_frame.flag & g_frame.bit) != 0;
+
+    if (g_frame.set >= 0 && cur_on == (g_frame.mine_on != 0) &&
+        (!cur_on || !memcmp(g_frame.m, g_frame.mine, sizeof g_frame.mine)))
+        return 1;
+    if (cur_on == (g_frame.was != 0) && (!cur_on || !memcmp(g_frame.m, g_frame.keep, sizeof g_frame.keep)))
+        return 2;
+    return 0;
+}
+
+static void draw_enter(void *hud, float x, float y, void *image, struct draw_win *w)
+{
+    static int said[GAME_PARTS];
+    const float *base;
+    float sx = x, sy = y, iw, ih, k = 1;
+    int n, cur_on, now, mine, untouched;
+
+    w->on = 0;
+    if (g_draw_depth++ || g_text_depth || g_drawing < 0 || !g_frame.ok || hud != g_frame.hud)
+        return;
+    cur_on = (*g_frame.flag & g_frame.bit) != 0;
+    now = transform_now();
+    mine = now == 1;
+    untouched = now == 2;
+    base = mine || untouched ? (g_frame.was ? g_frame.keep : NULL) : cur_on ? g_frame.m : NULL;
+    if (base) {
+        sx = base[0] * x + base[1] * y + base[2];
+        sy = base[3] * x + base[4] * y + base[5];
+        k = base[0] > 0 ? base[0] : 1;
+    }
+    n = g_drawing == GP_HEALTH ? status_group(sx, sy) : g_drawing == GP_QUICK ? quick_use_group(sx, sy) : g_drawing;
+    image_size(image, &iw, &ih);
+    grow_area(n, sx, sy, iw * k, ih * k);
+
+    if (mine || untouched) {
+        if (!mine || n != g_frame.set)
+            frame_set(n);
+        return;
+    }
+    /* the part's own transform: this call's move on top of it */
+    if (!said[n]) {
+        said[n] = 1;
+        log_line("game HUD: %ls sets a draw transform of its own - moved call by call", GAME_PART[n].name);
+    }
+    if (!part_moved(n))
+        return;
+    w->was = *g_frame.flag & g_frame.bit;
+    memcpy(w->keep, g_frame.m, sizeof w->keep);
+    part_matrix(n, cur_on ? w->keep : NULL, g_frame.m);
+    *g_frame.flag |= g_frame.bit;
+    w->on = 1;
+    g_win = w;
+}
+
+static void draw_leave(struct draw_win *w)
+{
+    g_draw_depth--;
+    if (!w->on)
+        return;
+    g_win = NULL;
+    memcpy(g_frame.m, w->keep, sizeof w->keep);
+    if (w->was)
+        *g_frame.flag |= g_frame.bit;
+    else
+        *g_frame.flag &= ~g_frame.bit;
+}
+
+/* The game's text goes through the font renderer, not the HUD's drawing
+ * calls. Its drawing calls place a line in one of three ways: at (x, y) on
+ * the screen; against an image (_UseImgPos: the image's place plus an added
+ * x, y); or against a guide (_UseGuide: an image's place moved from one guide
+ * image to another, plus an added x, y). While one of the game's parts draws,
+ * each line is moved by its part's move (the part for the corner it is in)
+ * and sized with it, by changing its x, y or added x, y; the HUD's transform
+ * is put back to what it was before any move of ours while it draws, so the
+ * line is moved once. Our own durability numbers come here too, inside their
+ * bar's drawing call, and so move with their bar. Every one of them returns
+ * a float (the width drawn), passed back as it is. */
+enum { TP_SCREEN, TP_IMAGE, TP_GUIDE };
+static const struct {
+    const char *name;           /* "UBrgUIFontRenderexec" + name */
+    int place;                  /* TP_ */
+    int add;                    /* the argument with the x (y next to it): 0 = this, ... */
+} TEXT[] = {
+    {"DrawText_UseImgPos", TP_IMAGE, 5}, {"DrawShadowText_UseImgPos", TP_IMAGE, 5},
+    {"DrawShadowText_UseImgPos_KeepColor", TP_IMAGE, 5}, {"DrawTextRight_UseImgPos", TP_IMAGE, 4},
+    {"DrawNumber_UseImgPos", TP_IMAGE, 4}, {"DrawNumberCenter_UseImgPos", TP_IMAGE, 4},
+    {"DrawNumberLeft_UseImgPos", TP_IMAGE, 4}, {"DrawTimeText_UseImgPos", TP_IMAGE, 9},
+    {"DrawTimeTextRight_UseImgPos", TP_IMAGE, 8}, {"DrawText_UseGuide", TP_GUIDE, 7},
+    {"DrawTextRight_UseGuide", TP_GUIDE, 6}, {"DrawNumber_UseGuide", TP_GUIDE, 6},
+    {"DrawNumberCenter_UseGuide", TP_GUIDE, 6}, {"DrawNumberLeft_UseGuide", TP_GUIDE, 6},
+    {"DrawTimeText_UseGuide", TP_GUIDE, 11}, {"DrawTimeTextRight_UseGuide", TP_GUIDE, 10},
+    {"DrawNumber", TP_SCREEN, 1}, {"DrawShadowString", TP_SCREEN, 1}, {"DrawTimeText", TP_SCREEN, 1},
+};
+#define TEXTS ((int)(sizeof TEXT / sizeof TEXT[0]))
+
+static struct { void **table; void *original[TEXTS]; } g_text_hooked[4];
+static int g_text_nhooked;
+static int g_text_slot[TEXTS];
+
+/* Each one's function-table slot, from its native wrapper (0: not found).
+ * Some wrappers are in pieces, and the last call found is not the one to the
+ * text drawing: a slot is only taken among the renderer's own functions, near
+ * GetDrawTextWidthWithFontState's (in 1.91 and 1.92 they are 0x260 to 0x310,
+ * that one 0x2F0). */
+static void text_slots(struct pieces *pc, int slot[TEXTS])
+{
+    char name[80];
+    int i;
+
+    for (i = 0; i < TEXTS; i++) {
+        snprintf(name, sizeof name, "UBrgUIFontRenderexec%s", TEXT[i].name);
+        slot[i] = wrapper_slot(pc, name);
+        if (!pc->vt_text_width || slot[i] < pc->vt_text_width - 0x100 || slot[i] > pc->vt_text_width + 0x100)
+            slot[i] = 0;
+    }
+}
+
+static void *text_original(void *font, int i)
+{
+    void **table = font ? *(void ***)font : NULL;
+    int k;
+
+    for (k = 0; k < g_text_nhooked; k++)
+        if (g_text_hooked[k].table == table)
+            return g_text_hooked[k].original[i];
+    return g_text_nhooked ? g_text_hooked[0].original[i] : NULL;
+}
+
+/* What a line of text changed, to put back after it. */
+struct text_win {
+    int on, scaled;
+    uint32_t was;
+    float keep[6], *sx, *sy, scale[2];
+};
+
+/* Where an image is, in the game's drawing space. */
+static int image_place(void *image, float *x, float *y)
+{
+    static ptrdiff_t at_x = -1, at_y = -1;
+    int32_t *px, *py;
+
+    if (!image || !readable(image, 0x100))
+        return 0;
+    if (at_x < 0) {
+        unsigned char *fx = field_of(class_of(image), L"mPosX"), *fy = field_of(class_of(image), L"mPosY");
+        if (!fx || !fy)
+            return 0;
+        at_x = offset_of(fx);
+        at_y = offset_of(fy);
+    }
+    px = (int32_t *)((unsigned char *)image + at_x);
+    py = (int32_t *)((unsigned char *)image + at_y);
+    if (!readable(px, 4) || !readable(py, 4))
+        return 0;
+    *x = (float)*px;
+    *y = (float)*py;
+    return 1;
+}
+
+/* The text state's size fields (from the status panel's own text state, the
+ * same kind of struct), or -1. */
+static void text_scale_at(ptrdiff_t *at_sx, ptrdiff_t *at_sy)
+{
+    static ptrdiff_t sx = -1, sy = -1;
+    unsigned char *f_state, *def, *f_sx, *f_sy;
+
+    if (sx < 0 && g_status && (f_state = field_of(class_of(g_status), L"mFont2")) &&
+        (def = *(unsigned char **)(f_state + PROP_INNER)) && readable(def, 0x100) &&
+        (f_sx = field_of(def, L"mScaleX")) && (f_sy = field_of(def, L"mScaleY"))) {
+        sx = offset_of(f_sx);
+        sy = offset_of(f_sy);
+    }
+    *at_sx = sx;
+    *at_sy = sy;
+}
+
+/* A float argument, by its bits. */
+static float as_float(uint64_t v)
+{
+    float f;
+    uint32_t low = (uint32_t)v;
+    memcpy(&f, &low, 4);
+    return f;
+}
+
+static uint64_t from_float(uint64_t v, float f)
+{
+    uint32_t low;
+    memcpy(&low, &f, 4);
+    return (v & 0xFFFFFFFF00000000ull) | low;
+}
+
+/* Line `i` is about to draw: `arg` are its arguments (0 = the renderer),
+ * `x` and `y` its x, y or added x, y. */
+static void text_enter(int i, const uint64_t *arg, float *x, float *y, struct text_win *t)
+{
+    static uint64_t said[GAME_PARTS];   /* bit i: game text call i logged; i + 32: ours */
+    void *state = TEXT[i].place == TP_SCREEN ? NULL : (void *)arg[1];
+    float px = 0, py = 0, sx, sy, tx, ty, m[6], dx, dy, k, det;
+    const float *pre = NULL;
+    ptrdiff_t at_sx, at_sy;
+    int n;
+
+    t->on = t->scaled = 0;
+    if (g_drawing < 0 || !g_frame.ok)
+        return;
+    if (TEXT[i].place == TP_IMAGE && !image_place((void *)arg[2], &px, &py))
+        return;
+    if (TEXT[i].place == TP_GUIDE) {
+        float ix, iy, gx, gy, dgx, dgy;
+        if (!image_place((void *)arg[2], &ix, &iy) || !image_place((void *)arg[3], &gx, &gy) ||
+            !image_place((void *)arg[4], &dgx, &dgy))
+            return;
+        px = ix - gx + dgx;
+        py = iy - gy + dgy;
+    }
+
+    /* the transform before any move of ours: the line is drawn through it */
+    if (g_win) {
+        if (g_win->was)
+            pre = g_win->keep;
+    } else if (transform_now() == 1) {
+        if (g_frame.was)
+            pre = g_frame.keep;
+    } else if (*g_frame.flag & g_frame.bit) {
+        pre = g_frame.m;
+    }
+    sx = px + *x;
+    sy = py + *y;
+    if (pre) {
+        tx = pre[0] * sx + pre[1] * sy + pre[2];
+        ty = pre[3] * sx + pre[4] * sy + pre[5];
+        sx = tx;
+        sy = ty;
+    }
+    n = g_drawing == GP_HEALTH ? status_group(sx, sy) : g_drawing == GP_QUICK ? quick_use_group(sx, sy) : g_drawing;
+    if (!part_moved(n))
+        return;
+    part_matrix(n, NULL, m);
+    dx = m[0] * sx + m[2] - sx;
+    dy = m[4] * sy + m[5] - sy;
+    if (pre && (det = pre[0] * pre[4] - pre[1] * pre[3]) != 0) {
+        /* the move is on the screen; the line's x, y are before the transform */
+        float ux = (pre[4] * dx - pre[1] * dy) / det, uy = (pre[0] * dy - pre[3] * dx) / det;
+        dx = ux;
+        dy = uy;
+    }
+    *x += dx;
+    *y += dy;
+    if (!(said[n] >> (i + g_own_text * 32) & 1)) {
+        said[n] |= 1ull << (i + g_own_text * 32);
+        log_line("game HUD: %ls's %s %s at %.0f, %.0f is moved %.0f, %.0f (drawn through %.3f %.3f %.0f / %.3f %.3f %.0f)",
+                 GAME_PART[n].name, g_own_text ? "durability" : "game", TEXT[i].name, sx, sy, dx, dy,
+                 pre ? pre[0] : 1, pre ? pre[1] : 0, pre ? pre[2] : 0, pre ? pre[3] : 0, pre ? pre[4] : 1,
+                 pre ? pre[5] : 0);
+    }
+
+    t->was = *g_frame.flag & g_frame.bit;
+    memcpy(t->keep, g_frame.m, sizeof t->keep);
+    t->on = 1;
+    if (pre) {
+        if (pre != g_frame.m)
+            memcpy(g_frame.m, pre, sizeof t->keep);
+        *g_frame.flag |= g_frame.bit;
+    } else {
+        *g_frame.flag &= ~g_frame.bit;
+    }
+
+    k = g_gp[n].size / 100.0f;
+    text_scale_at(&at_sx, &at_sy);
+    if (k != 1 && state && at_sx >= 0 && readable((unsigned char *)state + at_sx, 4) &&
+        readable((unsigned char *)state + at_sy, 4)) {
+        t->sx = (float *)((unsigned char *)state + at_sx);
+        t->sy = (float *)((unsigned char *)state + at_sy);
+        t->scale[0] = *t->sx;
+        t->scale[1] = *t->sy;
+        *t->sx *= k;
+        *t->sy *= k;
+        t->scaled = 1;
+    }
+}
+
+static void text_leave(const struct text_win *t)
+{
+    if (!t->on)
+        return;
+    memcpy(g_frame.m, t->keep, sizeof t->keep);
+    if (t->was)
+        *g_frame.flag |= g_frame.bit;
+    else
+        *g_frame.flag &= ~g_frame.bit;
+    if (t->scaled) {
+        *t->sx = t->scale[0];
+        *t->sy = t->scale[1];
+    }
+}
+
+/* The lines against an image or a guide take only pointers and whole numbers
+ * before their 5th argument, so all of theirs go through as they are (the
+ * floats after, on the stack, by their bits). The ones at (x, y) on the
+ * screen take x and y as their 1st and 2nd. */
+#define TEXT_ARGS uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, \
+    uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14, uint64_t a15, \
+    uint64_t a16
+typedef float (*text_fn)(void *, TEXT_ARGS);
+typedef float (*text_xy_fn)(void *, float, float, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                            uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+
+static float text_call(int i, void *font, uint64_t *a)
+{
+    text_fn f = (text_fn)text_original(font, i);
+    struct text_win t;
+    float x = as_float(a[TEXT[i].add]), y = as_float(a[TEXT[i].add + 1]), r;
+
+    a[0] = (uint64_t)font;
+    t.on = t.scaled = 0;
+    if (!g_text_depth++) {
+        text_enter(i, a, &x, &y, &t);
+        a[TEXT[i].add] = from_float(a[TEXT[i].add], x);
+        a[TEXT[i].add + 1] = from_float(a[TEXT[i].add + 1], y);
+    }
+    r = f ? f(font, a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15],
+              a[16]) : 0;
+    text_leave(&t);
+    g_text_depth--;
+    return r;
+}
+
+static float text_xy_call(int i, void *font, float x, float y, uint64_t *a)
+{
+    text_xy_fn f = (text_xy_fn)text_original(font, i);
+    struct text_win t;
+    float r;
+
+    a[0] = (uint64_t)font;
+    t.on = t.scaled = 0;
+    if (!g_text_depth++)
+        text_enter(i, a, &x, &y, &t);
+    r = f ? f(font, x, y, a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15],
+              a[16]) : 0;
+    text_leave(&t);
+    g_text_depth--;
+    return r;
+}
+
+#define TEXT_HOOK(i) static float text_hook_##i(void *font, TEXT_ARGS) \
+    { uint64_t a[17] = {0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16}; \
+      return text_call(i, font, a); }
+#define TEXT_XY_HOOK(i) static float text_hook_##i(void *font, float x, float y, uint64_t a3, uint64_t a4, \
+    uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, \
+    uint64_t a13, uint64_t a14, uint64_t a15, uint64_t a16) \
+    { uint64_t a[17] = {0, 0, 0, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16}; \
+      return text_xy_call(i, font, x, y, a); }
+TEXT_HOOK(0) TEXT_HOOK(1) TEXT_HOOK(2) TEXT_HOOK(3) TEXT_HOOK(4) TEXT_HOOK(5) TEXT_HOOK(6) TEXT_HOOK(7)
+TEXT_HOOK(8) TEXT_HOOK(9) TEXT_HOOK(10) TEXT_HOOK(11) TEXT_HOOK(12) TEXT_HOOK(13) TEXT_HOOK(14) TEXT_HOOK(15)
+TEXT_XY_HOOK(16) TEXT_XY_HOOK(17) TEXT_XY_HOOK(18)
+static void *const TEXT_HOOKS[TEXTS] = {
+    text_hook_0, text_hook_1, text_hook_2, text_hook_3, text_hook_4, text_hook_5, text_hook_6, text_hook_7,
+    text_hook_8, text_hook_9, text_hook_10, text_hook_11, text_hook_12, text_hook_13, text_hook_14, text_hook_15,
+    text_hook_16, text_hook_17, text_hook_18};
+
+/* Put the text hooks in the font renderer's function table, once per table. */
+static void hook_texts(void *font)
+{
+    static int found;
+    void **table = font ? *(void ***)font : NULL;
+    int i, n = 0, end = 0;
+    DWORD old;
+
+    if (!found) {
+        found = 1;
+        text_slots(&g_pc, g_text_slot);
+    }
+    for (i = 0; i < TEXTS; i++)
+        if (g_text_slot[i] > end)
+            end = g_text_slot[i];
+    if (!table || !end || !readable(table, (size_t)end + 8))
+        return;
+    for (i = 0; i < g_text_nhooked; i++)
+        if (g_text_hooked[i].table == table)
+            return;
+    if (g_text_nhooked == 4 || !VirtualProtect(table, (size_t)end + 8, PAGE_READWRITE, &old))
+        return;
+    g_text_hooked[g_text_nhooked].table = table;
+    for (i = 0; i < TEXTS; i++) {
+        void **entry = (void **)((unsigned char *)table + g_text_slot[i]);
+        if (!g_text_slot[i] || *entry == TEXT_HOOKS[i] || !inside(g_pc.text, *entry, 1))
+            continue;
+        g_text_hooked[g_text_nhooked].original[i] = *entry;
+        *entry = TEXT_HOOKS[i];
+        n++;
+    }
+    g_text_nhooked++;
+    VirtualProtect(table, (size_t)end + 8, old, &old);
+    log_line("game HUD: %d of the font renderer's %d text calls are watched", n, TEXTS);
+}
+
+/* The HUD's drawing calls, each hooked in the HUD's function table. Each one
+ * passes every argument straight on: the first three by their kind (a float in
+ * an xmm register, anything else in a general one), and twelve stack slots
+ * after them, more than any of them takes. Where the position is: 'f' calls
+ * start (x, y, ...), 'i' calls start (x, y, image or other), 'r' calls start
+ * (two bytes, x) with y the first on the stack. The text ones ('i' too)
+ * return the width drawn, passed back as it is. */
+#define DRAW_STACK uint64_t s5, uint64_t s6, uint64_t s7, uint64_t s8, uint64_t s9, uint64_t s10, uint64_t s11, \
+    uint64_t s12, uint64_t s13, uint64_t s14, uint64_t s15, uint64_t s16
+#define DRAW_PASS s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15, s16
+typedef void (*draw_f_fn)(void *, float, float, float, DRAW_STACK);
+typedef void (*draw_i_fn)(void *, float, float, uint64_t, DRAW_STACK);
+typedef float (*draw_t_fn)(void *, float, float, uint64_t, DRAW_STACK);
+typedef void (*draw_r_fn)(void *, uint64_t, uint64_t, float, DRAW_STACK);
+
+static struct { void **table; void *original[DRAWS]; } g_draw_hooked[4];
+static int g_draw_nhooked;
+
+static void *draw_original(void *hud, int i)
+{
+    void **table = hud ? *(void ***)hud : NULL;
+    int k;
+
+    for (k = 0; k < g_draw_nhooked; k++)
+        if (g_draw_hooked[k].table == table)
+            return g_draw_hooked[k].original[i];
+    return g_draw_nhooked ? g_draw_hooked[0].original[i] : NULL;
+}
+
+#define DRAW_HOOK_F(i) static void draw_hook_##i(void *hud, float a, float b, float c, DRAW_STACK) \
+    { draw_f_fn f = (draw_f_fn)draw_original(hud, i); struct draw_win w; draw_enter(hud, a, b, NULL, &w); \
+      if (f) f(hud, a, b, c, DRAW_PASS); draw_leave(&w); }
+#define DRAW_HOOK_I(i) static void draw_hook_##i(void *hud, float a, float b, uint64_t c, DRAW_STACK) \
+    { draw_i_fn f = (draw_i_fn)draw_original(hud, i); struct draw_win w; \
+      draw_enter(hud, a, b, DRAW[i].image ? (void *)c : NULL, &w); if (f) f(hud, a, b, c, DRAW_PASS); draw_leave(&w); }
+#define DRAW_HOOK_T(i) static float draw_hook_##i(void *hud, float a, float b, uint64_t c, DRAW_STACK) \
+    { draw_t_fn f = (draw_t_fn)draw_original(hud, i); struct draw_win w; float r = 0; \
+      draw_enter(hud, a, b, NULL, &w); if (f) r = f(hud, a, b, c, DRAW_PASS); draw_leave(&w); return r; }
+#define DRAW_HOOK_R(i) static void draw_hook_##i(void *hud, uint64_t a, uint64_t b, float c, DRAW_STACK) \
+    { draw_r_fn f = (draw_r_fn)draw_original(hud, i); struct draw_win w; draw_enter(hud, c, as_float(s5), NULL, &w); \
+      if (f) f(hud, a, b, c, DRAW_PASS); draw_leave(&w); }
+
+DRAW_HOOK_I(0) DRAW_HOOK_F(1) DRAW_HOOK_F(2) DRAW_HOOK_F(3) DRAW_HOOK_F(4) DRAW_HOOK_F(5) DRAW_HOOK_R(6)
+DRAW_HOOK_F(7) DRAW_HOOK_F(8) DRAW_HOOK_I(9) DRAW_HOOK_I(10) DRAW_HOOK_F(11) DRAW_HOOK_F(12) DRAW_HOOK_F(13)
+DRAW_HOOK_F(14) DRAW_HOOK_F(15) DRAW_HOOK_F(16) DRAW_HOOK_F(17) DRAW_HOOK_F(18) DRAW_HOOK_F(19) DRAW_HOOK_F(20)
+DRAW_HOOK_F(21) DRAW_HOOK_T(22) DRAW_HOOK_T(23) DRAW_HOOK_T(24) DRAW_HOOK_T(25) DRAW_HOOK_T(26) DRAW_HOOK_I(27)
+
+static void *const DRAW_HOOKS[DRAWS] = {
+    draw_hook_0, draw_hook_1, draw_hook_2, draw_hook_3, draw_hook_4, draw_hook_5, draw_hook_6, draw_hook_7,
+    draw_hook_8, draw_hook_9, draw_hook_10, draw_hook_11, draw_hook_12, draw_hook_13, draw_hook_14, draw_hook_15,
+    draw_hook_16, draw_hook_17, draw_hook_18, draw_hook_19, draw_hook_20, draw_hook_21, draw_hook_22, draw_hook_23,
+    draw_hook_24, draw_hook_25, draw_hook_26, draw_hook_27};
+
+/* Put the drawing hooks in the HUD class's function table, once per table. A
+ * call not found in this game build is left as it is. */
+static void hook_draws(void *hud)
+{
+    void **table = hud ? *(void ***)hud : NULL;
+    int i, n = 0, end = 0;
+    DWORD old;
+
+    for (i = 0; i < DRAWS; i++)
+        if (g_pc.vt_draw[i] > end)
+            end = g_pc.vt_draw[i];
+    if (!table || !end || !readable(table, (size_t)end + 8))
+        return;
+    for (i = 0; i < g_draw_nhooked; i++)
+        if (g_draw_hooked[i].table == table)
+            return;
+    if (g_draw_nhooked == 4 || !VirtualProtect(table, (size_t)end + 8, PAGE_READWRITE, &old))
+        return;
+    g_draw_hooked[g_draw_nhooked].table = table;
+    for (i = 0; i < DRAWS; i++) {
+        void **entry = (void **)((unsigned char *)table + g_pc.vt_draw[i]);
+        if (!g_pc.vt_draw[i] || *entry == DRAW_HOOKS[i] || !inside(g_pc.text, *entry, 1))
+            continue;
+        g_draw_hooked[g_draw_nhooked].original[i] = *entry;
+        *entry = DRAW_HOOKS[i];
+        n++;
+    }
+    g_draw_nhooked++;
+    VirtualProtect(table, (size_t)end + 8, old, &old);
+    log_line("game HUD: %d of the HUD's %d drawing calls are watched", n, DRAWS);
+}
+
+/* Each part draws through its own function-table slot; one hook a part. */
+static struct { void **table; status_render_fn original; } g_gp_hooked[GAME_PARTS][4];
+static int g_gp_nhooked[GAME_PARTS];
+
+static void game_part_render(int n, void *panel, void *hud)
+{
+    void **table = panel ? *(void ***)panel : NULL;
+    status_render_fn original = NULL;
+    int i;
+
+    for (i = 0; i < g_gp_nhooked[n]; i++)
+        if (g_gp_hooked[n][i].table == table)
+            original = g_gp_hooked[n][i].original;
+    if (!original && g_gp_nhooked[n])
+        original = g_gp_hooked[n][0].original;
+    if (!original)
+        return;
+    if (g_drawing >= 0) {
+        original(panel, hud);       /* drawn by another part: it goes with that one */
+        return;
+    }
+    frame_begin(n, hud);
+    original(panel, hud);
+    frame_end();
+}
+
+#define GP_HOOK(n) static void gp_hook_##n(void *panel, void *hud) { game_part_render(n, panel, hud); }
+GP_HOOK(5) GP_HOOK(6) GP_HOOK(7) GP_HOOK(8) GP_HOOK(9) GP_HOOK(10) GP_HOOK(11) GP_HOOK(12) GP_HOOK(13)
+static const status_render_fn GP_HOOKS[GAME_PARTS] = {NULL, NULL, NULL, NULL, NULL, gp_hook_5, gp_hook_6,
+                                                      gp_hook_7, gp_hook_8, gp_hook_9, gp_hook_10, gp_hook_11,
+                                                      gp_hook_12};
+
+/* Hook part `n`'s drawing, once per function table (the player status panel
+ * has its own hook, status_render_hook, which does the same for its four). */
+static void hook_game_part(int n, void *panel)
+{
+    static int said[GAME_PARTS];
+    void **table = panel ? *(void ***)panel : NULL, **entry;
+    int slot = g_pc.vt_game[n], i;
+    DWORD old;
+
+    if (!GP_HOOKS[n] || !slot || !table || !readable(table, (size_t)slot + 8))
+        return;
+    for (i = 0; i < g_gp_nhooked[n]; i++)
+        if (g_gp_hooked[n][i].table == table)
+            return;
+    if (g_gp_nhooked[n] == 4)
+        return;
+    entry = (void **)((unsigned char *)table + slot);
+    if (*entry == (void *)GP_HOOKS[n] || !inside(g_pc.text, *entry, 1) ||
+        !VirtualProtect(entry, 8, PAGE_READWRITE, &old)) {
+        if (!said[n]) {
+            said[n] = 1;
+            log_line("game HUD: could not hook %ls - it stays where the game puts it", GAME_PART[n].name);
+        }
+        return;
+    }
+    g_gp_hooked[n][g_gp_nhooked[n]].table = table;
+    g_gp_hooked[n][g_gp_nhooked[n]].original = (status_render_fn)*entry;
+    g_gp_nhooked[n]++;
+    *entry = (void *)GP_HOOKS[n];
+    VirtualProtect(entry, 8, old, &old);
+    log_line("game HUD: %ls is hooked (slot 0x%X)", GAME_PART[n].name, slot);
+}
+
+/* The layout mode's stand-ins for the game's parts: a box where each one was
+ * last seen (or a rough guess, until it has been), moved and sized as set,
+ * with its name - so a part that is not on the screen now can be placed. */
+static void draw_stand_ins(void)
+{
+    int n;
+
+    if (!g_layout.on || g_layout.page)
+        return;
+    for (n = 0; n < GAME_PARTS; n++) {
+        const struct part_area *a = &g_area[n];
+        int picked = g_layout.part == PART_GAME + n;
+        unsigned colour = picked ? LAYOUT_YELLOW : 0xFFFFFF;
+        float r[4], m[4], line = 2;
+        wchar_t label[96];
+
+        if (a->seen && a->x2 - a->x1 >= 8 && a->y2 - a->y1 >= 8) {
+            r[0] = a->x1; r[1] = a->y1; r[2] = a->x2; r[3] = a->y2;
+        } else {
+            memcpy(r, GAME_PART[n].guess, sizeof r);
+        }
+        moved_rect(n, r, m);
+        draw_box(m[0], m[1], m[2], m[3], colour, picked ? 60 : 20);
+        draw_box(m[0], m[1], m[2], m[1] + line, colour, picked ? 255 : 120);
+        draw_box(m[0], m[3] - line, m[2], m[3], colour, picked ? 255 : 120);
+        draw_box(m[0], m[1], m[0] + line, m[3], colour, picked ? 255 : 120);
+        draw_box(m[2] - line, m[1], m[2], m[3], colour, picked ? 255 : 120);
+        swprintf(label, 96, L"%ls%ls%ls", GAME_PART[n].name, g_gp[n].show ? L"" : L" (hidden)",
+                 a->seen ? L"" : L" (not seen yet)");
+        draw_line(label, m[0] + 6, m[1] + 4, 0, picked ? 60 : 50, colour);
+    }
+}
+
+/* Where each part was seen, into lid-hud.ini: when the layout mode closes,
+ * and every half minute while they grow. */
+#define GP_SEEN_VERSION 2       /* a change to which drawing goes to which part: what was seen is seen again */
+
+static void save_areas(void)
+{
+    wchar_t key[48], value[64];
+    int n;
+
+    if (!g_ini_path[0])
+        return;
+    swprintf(value, 64, L"%d", GP_SEEN_VERSION);
+    WritePrivateProfileStringW(L"game_hud", L"seen_version", value, g_ini_path);
+    for (n = 0; n < GAME_PARTS; n++) {
+        const struct part_area *a = &g_area[n];
+        swprintf(key, 48, L"%ls_area", GAME_PART[n].key);
+        WritePrivateProfileStringW(L"game_hud", key, NULL, g_ini_path);    /* 0.12.0 test builds' */
+        swprintf(key, 48, L"%ls_seen", GAME_PART[n].key);
+        swprintf(value, 64, L"%d %d %d %d", (int)a->x1, (int)a->y1, (int)a->x2, (int)a->y2);
+        WritePrivateProfileStringW(L"game_hud", key, a->seen ? value : NULL, g_ini_path);
+    }
+    WritePrivateProfileStringW(NULL, NULL, NULL, g_ini_path);      /* flush */
+    {
+        /* our own write: not a change of settings to read back */
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        if (GetFileAttributesExW(g_ini_path, GetFileExInfoStandard, &fa))
+            g_ini_time = fa.ftLastWriteTime;
+    }
+    g_areas_changed = 0;
+    g_areas_saved_at = GetTickCount();
+}
+
+/* Where each part was seen, from lid-hud.ini. */
+static void read_areas(void)
+{
+    wchar_t key[48], value[64];
+    int n, v[4];
+
+    if (GetPrivateProfileIntW(L"game_hud", L"seen_version", 0, g_ini_path) != GP_SEEN_VERSION)
+        return;
+    for (n = 0; n < GAME_PARTS; n++) {
+        swprintf(key, 48, L"%ls_seen", GAME_PART[n].key);
+        GetPrivateProfileStringW(L"game_hud", key, L"", value, 64, g_ini_path);
+        if (swscanf(value, L"%d %d %d %d", &v[0], &v[1], &v[2], &v[3]) == 4 && v[2] > v[0] && v[3] > v[1]) {
+            g_area[n].x1 = (float)clamp(v[0], 0, 1920);
+            g_area[n].y1 = (float)clamp(v[1], 0, 1080);
+            g_area[n].x2 = (float)clamp(v[2], 0, 1920);
+            g_area[n].y2 = (float)clamp(v[3], 0, 1080);
+            g_area[n].seen = 1;
+        }
+    }
+}
+
 static void status_render_hook(void *panel, void *hud)
 {
     void **table = panel ? *(void ***)panel : NULL;
@@ -2142,8 +3162,13 @@ static void status_render_hook(void *panel, void *hud)
             original = g_status_hooked[i].original;
     if (!original && g_status_nhooked)
         original = g_status_hooked[0].original;
-    if (original)
+    if (original) {
+        /* the game's own health, rage and status notices: each drawing call
+         * is moved as set for its corner (draw_enter) */
+        frame_begin(GP_HEALTH, hud);
         original(panel, hud);
+        frame_end();
+    }
     transform = hud_transform_off();
     if (minimap_ok(&g_pc))
         draw_minimap(panel, hud);
@@ -2153,6 +3178,7 @@ static void status_render_hook(void *panel, void *hud)
     draw_bag(panel);
     draw_effects(panel);
     draw_run(panel);
+    draw_stand_ins();
     draw_layout_help();
     hud_transform_back(transform);
 }
@@ -4243,6 +5269,18 @@ static void layout_save(void)
     ini_write(L"minimap", L"x", g_mini.x);
     ini_write(L"minimap", L"y", g_mini.y);
     ini_write(L"minimap", L"size", g_mini.size);
+    for (i = 0; i < GAME_PARTS; i++) {
+        wchar_t key[40];
+        swprintf(key, 40, L"%ls_show", GAME_PART[i].key);
+        ini_write(L"game_hud", key, g_gp[i].show);
+        swprintf(key, 40, L"%ls_x", GAME_PART[i].key);
+        ini_write(L"game_hud", key, g_gp[i].x);
+        swprintf(key, 40, L"%ls_y", GAME_PART[i].key);
+        ini_write(L"game_hud", key, g_gp[i].y);
+        swprintf(key, 40, L"%ls_size", GAME_PART[i].key);
+        ini_write(L"game_hud", key, g_gp[i].size);
+    }
+    save_areas();
     WritePrivateProfileStringW(NULL, NULL, NULL, g_ini_path);      /* flush */
     /* the file now says what is in use: no need to read it again */
     if (GetFileAttributesExW(g_ini_path, GetFileExInfoStandard, &a))
@@ -4258,9 +5296,23 @@ static void layout_changed(void)
     g_settings_changed = 1;         /* the HUD draws its bars again at once */
 }
 
+/* The game's own part the layout mode has picked, or NULL. */
+static struct game_part_settings *picked_game_part(void)
+{
+    return g_layout.part >= PART_GAME && g_layout.part < PARTS ? &g_gp[g_layout.part - PART_GAME] : NULL;
+}
+
 static void layout_move(int dx, int dy)
 {
     int k = g_layout.item - 1;
+    struct game_part_settings *gp = picked_game_part();
+
+    if (gp) {
+        gp->x = clamp(gp->x + dx, -1920, 1920);
+        gp->y = clamp(gp->y + dy, -1080, 1080);
+        layout_changed();
+        return;
+    }
 
     const struct block_settings *home;
     struct block_settings *b = part_block(g_layout.part, &home);
@@ -4310,7 +5362,13 @@ static void layout_size(int more, int fast)
 {
     const struct block_settings *home;
     struct block_settings *b = part_block(g_layout.part, &home);
+    struct game_part_settings *gp = picked_game_part();
 
+    if (gp) {
+        gp->size = clamp(gp->size + more * (fast ? 20 : 5), 30, 300);
+        layout_changed();
+        return;
+    }
     if (b) {
         b->size = clamp(b->size + more * (fast ? 20 : 5), 40, 300);
         layout_changed();
@@ -4344,7 +5402,16 @@ static void layout_other(UINT key)
      * floor info line (a durability slot goes with the whole part) */
     const struct block_settings *home;
     struct block_settings *b = part_block(g_layout.part, &home);
+    struct game_part_settings *gp = picked_game_part();
 
+    if (gp) {                   /* the game's own part: H hides it, R puts it back */
+        if (key == 'H')
+            gp->show = !gp->show;
+        else if (key == 'R')
+            gp->x = gp->y = 0, gp->size = 100, gp->show = 1;
+        layout_changed();
+        return;
+    }
     if (k >= 0 && key == 'R' && piece_offsets(g_layout.part, 0)) {
         piece_offsets(g_layout.part, 0)[k] = piece_offsets(g_layout.part, 1)[k] = 0;
         layout_changed();
@@ -4649,7 +5716,11 @@ static void draw_layout_help(void)
         draw_options();
         return;
     }
-    switch (g_layout.item ? -1 : g_layout.part) {
+    if (picked_game_part()) {
+        const struct game_part_settings *gp = picked_game_part();
+        swprintf(what, 160, L"Game's own: %ls%ls: x %+d, y %+d, size %d%%", GAME_PART[g_layout.part - PART_GAME].name,
+                 gp->show ? L"" : L" (hidden)", gp->x, gp->y, gp->size);
+    } else switch (g_layout.item ? -1 : g_layout.part) {
     case -1:                    /* one piece on its own */
         piece = g_layout.item - 1;
         if (g_layout.part == PART_DURABILITY)
@@ -4801,6 +5872,15 @@ static void on_frame(HWND front)
     }
     if ((enemies_ok(&g_pc) || minimap_ok(&g_pc)) && g_status)
         hook_status(g_status);
+    if (ui) {
+        int i;
+        hook_draws(g_hud);
+        hook_texts(g_font);
+        for (i = GP_STATUS_GROUPS; i < GAME_PARTS; i++)
+            hook_game_part(i, object_at(ui, GAME_PART[i].field));
+        if (g_areas_changed && !g_layout.on && GetTickCount() - g_areas_saved_at > 30000)
+            save_areas();
+    }
     serial_killer_effect();
     if (map_ok(&g_pc) && ui)
         hook_map(object_at(ui, L"mPauseMap"));

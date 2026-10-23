@@ -180,6 +180,42 @@ int main(void)
     check("Page Up back to the whole part", g_layout.item, 0);
     press('C');
     check("the whole part: C centres it", g_run.b.align, 1);
+
+    puts("the game's own parts:");
+    press(VK_TAB);
+    check("Tab: the game's health and rage", g_layout.part, PART_GAME + GP_HEALTH);
+    press(VK_RIGHT);
+    press(VK_DOWN);
+    press(VK_DOWN);
+    press(VK_OEM_MINUS);
+    check("x", g_gp[GP_HEALTH].x, 1);
+    check("y", g_gp[GP_HEALTH].y, 2);
+    check("size", g_gp[GP_HEALTH].size, 95);
+    check("Page Down: no pieces of its own", (press(VK_NEXT), g_layout.item), 0);
+    check("C does nothing to it", (press('C'), g_gp[GP_HEALTH].x), 1);
+    press(VK_TAB);
+    check("Tab: the status notices", g_layout.part, PART_GAME + GP_NOTICES);
+    press(VK_TAB);
+    check("Tab: the left hand's weapons", g_layout.part, PART_GAME + GP_LEFT);
+    press(VK_LEFT);
+    check("... moved on their own", g_gp[GP_LEFT].x, -1);
+    check("... health stays", g_gp[GP_HEALTH].x, 1);
+    press(VK_TAB);
+    check("Tab: the right hand's weapons", g_layout.part, PART_GAME + GP_RIGHT);
+    press(VK_TAB);
+    check("Tab: the decals", g_layout.part, PART_GAME + GP_DECALS);
+    press(VK_TAB);
+    check("Tab: the quick items", g_layout.part, PART_GAME + GP_QUICK);
+    press('H');
+    check("H hides them", g_gp[GP_QUICK].show, 0);
+    press(VK_LEFT);
+    press('R');
+    check("R puts them back: shown", g_gp[GP_QUICK].show, 1);
+    check("... where the game puts them", g_gp[GP_QUICK].x, 0);
+    for (i = GP_QUICK; i < GAME_PARTS - 1; i++)
+        press(VK_TAB);
+    check("on to the last of them, the button guide", g_layout.part, PART_GAME + GP_BUTTONS);
+    press('H');
     press(VK_TAB);
     check("Tab after the last part: the first again", g_layout.part, PART_DURABILITY);
 
@@ -297,6 +333,8 @@ int main(void)
     g_set.colour = 0xFFFFFF;
     g_floor.fungus_colour = g_rage.colour = 0;
     g_menu.panel = 1;
+    for (i = 0; i < GAME_PARTS; i++)
+        g_gp[i].show = 1, g_gp[i].x = g_gp[i].y = 0, g_gp[i].size = 100;
     read_settings();
     check("durability x", g_set.x, 2);
     check("durability y", g_set.y, -1);
@@ -338,6 +376,77 @@ int main(void)
     check("Fun Fungus line colour", (int)g_floor.fungus_colour, 0x3CE6FF);
     check("rage colour", (int)g_rage.colour, 0xFFE63C);
     check("menu panel (B)", g_menu.panel, 0);
+    check("game's health and rage x", g_gp[GP_HEALTH].x, 1);
+    check("game's health and rage y", g_gp[GP_HEALTH].y, 2);
+    check("game's health and rage size", g_gp[GP_HEALTH].size, 95);
+    check("game's left-hand weapons x", g_gp[GP_LEFT].x, -1);
+    check("game's quick items shown", g_gp[GP_QUICK].show, 1);
+    check("game's button guide hidden", g_gp[GP_BUTTONS].show, 0);
+    check("game's timer untouched", g_gp[GP_TIMER].size, 100);
+
+    puts("the status panel's four parts, by corner (3840 x 2160):");
+    check("top left: health and rage", status_group(200, 150), GP_HEALTH);
+    check("top right: notices", status_group(3600, 150), GP_NOTICES);
+    check("bottom left: left hand", status_group(300, 1900), GP_LEFT);
+    check("bottom right: right hand", status_group(3500, 1900), GP_RIGHT);
+    check("bottom middle: the decals", status_group(1500, 1950), GP_DECALS);
+    puts("the quick use panel's three parts, by corner:");
+    check("top: the item box", quick_use_group(3600, 300), GP_QUICK);
+    check("bottom left: left-hand weapons", quick_use_group(300, 1900), GP_LEFT);
+    check("bottom right: right-hand weapons", quick_use_group(3500, 1900), GP_RIGHT);
+    check("bottom middle: the decals", quick_use_group(2500, 1950), GP_DECALS);
+    check("the left box's text (seen at 622) stays with it", quick_use_group(622, 2073), GP_LEFT);
+    check("the right box's text (seen at 3112) stays with it", quick_use_group(3112, 1822), GP_RIGHT);
+
+    puts("a part's move on top of a transform the game set (3840 x 2160):");
+    {
+        struct game_part_settings keep = g_gp[GP_LEFT];
+        const float game[6] = {0.5f, 0, 300, 0, 0.5f, 1800};   /* the game's: half size, at 300, 1800 */
+        float m[6];
+        g_gp[GP_LEFT].x = 40;
+        g_gp[GP_LEFT].y = -10;
+        g_gp[GP_LEFT].size = 100;
+        part_matrix(GP_LEFT, game, m);
+        check("x of the game's (100, 100), then moved 40 (80 in its space)", (int)(m[0] * 100 + m[1] * 100 + m[2]), 430);
+        check("... y, moved -10 (-20)", (int)(m[3] * 100 + m[4] * 100 + m[5]), 1830);
+        part_matrix(GP_LEFT, NULL, m);
+        check("no transform of the game's: just the move", (int)m[2], 80);
+        g_gp[GP_LEFT].x = g_gp[GP_LEFT].y = 0;
+        g_gp[GP_LEFT].size = 200;
+        part_matrix(GP_LEFT, game, m);
+        check("double size, around the middle: x", (int)(m[0] * 100 + m[1] * 100 + m[2]), -1220);
+        g_gp[GP_LEFT] = keep;
+    }
+
+    puts("stand-ins: where a part's box goes (1920 x 1080):");
+    {
+        static const float r[4] = {100, 900, 300, 1000};
+        float m[4];
+        struct game_part_settings keep = g_gp[GP_RIGHT];
+        g_gp[GP_RIGHT].x = 50;
+        g_gp[GP_RIGHT].y = -20;
+        g_gp[GP_RIGHT].size = 100;
+        moved_rect(GP_RIGHT, r, m);
+        check("moved: left edge", (int)m[0], 150);
+        check("moved: top edge", (int)m[1], 880);
+        g_gp[GP_RIGHT].x = g_gp[GP_RIGHT].y = 0;
+        g_gp[GP_RIGHT].size = 50;
+        moved_rect(GP_RIGHT, r, m);
+        check("half size, around the middle: left edge", (int)m[0], 530);
+        check("... bottom edge", (int)m[3], 770);
+        g_gp[GP_RIGHT] = keep;
+    }
+
+    puts("where parts were seen is kept in lid-hud.ini:");
+    g_area[GP_TIMER].x1 = 800; g_area[GP_TIMER].y1 = 30; g_area[GP_TIMER].x2 = 1100; g_area[GP_TIMER].y2 = 90;
+    g_area[GP_TIMER].seen = 1;
+    save_areas();
+    memset(g_area, 0, sizeof g_area);
+    read_settings();
+    check("timer seen", g_area[GP_TIMER].seen, 1);
+    check("timer's area: left", (int)g_area[GP_TIMER].x1, 800);
+    check("timer's area: bottom", (int)g_area[GP_TIMER].y2, 90);
+    check("boss health not seen yet", g_area[GP_BOSS].seen, 0);
 
     puts("R puts a part back:");
     press(VK_F8);

@@ -40,6 +40,12 @@ game shows its HUD.
 Every part can be switched off, moved and resized on its own, and given a text
 colour and a dark background.
 
+- **The game's own HUD** (plugin 0.12.0): health and rage, the status notices,
+  each hand's weapon boxes, the decals, the quick items box, the timer, boss
+  health, the floor name, messages, item pick-ups, the reticle, subtitles and
+  the button guide can be moved, resized and hidden too, in the same layout
+  mode. Parts not on the screen show a stand-in box to place them by.
+
 ## Setting it up in the game
 
 Press **F8** while playing to open the layout mode: Tab picks a part, the arrow
