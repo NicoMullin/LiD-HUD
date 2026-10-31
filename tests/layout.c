@@ -212,12 +212,39 @@ int main(void)
     press('R');
     check("R puts them back: shown", g_gp[GP_QUICK].show, 1);
     check("... where the game puts them", g_gp[GP_QUICK].x, 0);
-    for (i = GP_QUICK; i < GAME_PARTS - 1; i++)
+    for (i = GP_QUICK; i < GP_BUTTONS; i++)
         press(VK_TAB);
-    check("on to the last of them, the button guide", g_layout.part, PART_GAME + GP_BUTTONS);
+    check("on to the button guide", g_layout.part, PART_GAME + GP_BUTTONS);
     press('H');
     press(VK_TAB);
+    check("then the last of them, the quick items' buttons", g_layout.part, PART_GAME + GP_QUICK_BUTTONS);
+    press(VK_TAB);
     check("Tab after the last part: the first again", g_layout.part, PART_DURABILITY);
+
+    puts("the quick items' buttons go with the item box:");
+    {
+        float m[6];
+        g_gp[GP_QUICK].x = 10;
+        g_gp[GP_QUICK].size = 50;
+        check("moved with it", part_moved(GP_QUICK_BUTTONS), 1);
+        part_matrix(GP_QUICK_BUTTONS, NULL, m);
+        check("... sized with it (x 100)", (int)(m[0] * 100 + 0.5f), 50);
+        check("... and moved with it", (int)(m[2] + 0.5f), (int)(GP_PIVOT_X * 0.5f + 20 + 0.5f));
+        g_gp[GP_QUICK_BUTTONS].size = 50;
+        check("their own size on top (x 100)", (int)(part_scale(GP_QUICK_BUTTONS) * 100 + 0.5f), 25);
+        g_gp[GP_QUICK_BUTTONS].show = 0;
+        g_layout.on = 0;            /* the layout mode shows hidden parts */
+        part_matrix(GP_QUICK_BUTTONS, NULL, m);
+        check("hidden on their own: away", m[2] > GP_AWAY / 2, 1);
+        part_matrix(GP_QUICK, NULL, m);
+        check("... the item box stays", m[2] < GP_AWAY / 2, 1);
+        g_layout.on = 1;
+        g_gp[GP_QUICK].x = 0;
+        g_gp[GP_QUICK].size = 100;
+        g_gp[GP_QUICK_BUTTONS].size = 100;
+        g_gp[GP_QUICK_BUTTONS].show = 1;
+        check("back where the game puts them", part_moved(GP_QUICK_BUTTONS), 0);
+    }
 
     puts("minimap to the very edge:");
     press(VK_TAB);
@@ -457,6 +484,56 @@ int main(void)
     check("minimap corner", g_mini.corner, 0);
     check("minimap size", g_mini.size, 320);
     press(VK_F8);
+
+    puts("an effect's values go into its words:");
+    {
+        static const float risk[2] = {75, 25};
+        wchar_t out[128];
+        fill_values(L"Attack Up #0%\nDamage Up #1%", risk, 2, out, 128);
+        check("two values, two lines", wcscmp(out, L"Attack Up 75%\nDamage Up 25%") == 0, 1);
+        fill_values(L"Attack Up #0%", risk, 1, out, 128);
+        check("one value", wcscmp(out, L"Attack Up 75%") == 0, 1);
+        fill_values(L"Attack Up %\nDamage Up %", risk, 2, out, 128);
+        check("no marks: each \" %\" in turn", wcscmp(out, L"Attack Up 75%\nDamage Up 25%") == 0, 1);
+        fill_values(L"Infinite Ammo", risk, 1, out, 128);
+        check("no number in it", wcscmp(out, L"Infinite Ammo") == 0, 1);
+        fill_values(L"Damage Up #1%", risk, 1, out, 128);
+        check("a mark with no value stays", wcscmp(out, L"Damage Up #1%") == 0, 1);
+    }
+
+    puts("Tengoku blueprints by their id:");
+    {
+        static const wchar_t *const ids[5] = {L"ITMP_ARM_WP001_0H4", L"ITMP_ARM_WP001_0H4U", L"ITMP_ARM_WP030_001",
+                                              L"ITMP_SPO_HEAD_007U", L"H4"};
+        static const int want[5] = {1, 1, 0, 0, 0};
+        static const char *what[5] = {"an H4 blueprint", "its ??? one (H4U)", "an ordinary one",
+                                      "an ordinary ??? one", "too short to be one"};
+        int k;
+        for (k = 0; k < 5; k++) {
+            struct fstring s;
+            s.data = ids[k];
+            s.count = s.max = lstrlenW(ids[k]) + 1;
+            check(what[k], is_tengoku_id(&s), want[k]);
+        }
+    }
+
+    puts("blueprints and ??? ones by their id:");
+    {
+        static const wchar_t *const ids[4] = {L"ITMP_ARM_WP030_001", L"ITMP_SPO_HEAD_007U", L"MSR_022",
+                                              L"ITMT_IRON_2"};
+        static const int blueprint[4] = {1, 1, 0, 0}, unknown[4] = {0, 1, 0, 0};
+        static const char *what[4] = {"a named blueprint", "a ??? blueprint", "a mushroom", "a material"};
+        char line[64];
+        int k;
+        for (k = 0; k < 4; k++) {
+            struct fstring s;
+            s.data = ids[k];
+            s.count = s.max = lstrlenW(ids[k]) + 1;
+            check(what[k], is_blueprint_id(&s), blueprint[k]);
+            snprintf(line, sizeof line, "%s: a ??? one", what[k]);
+            check(line, is_blueprint_id(&s) && is_unknown_id(&s), unknown[k]);
+        }
+    }
 
     DeleteFileW(g_ini_path);
     printf(fails ? "\n%d WRONG\n" : "\nall passed\n", fails);

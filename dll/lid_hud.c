@@ -76,6 +76,14 @@
  *        any transform a part sets itself. The layout mode shows a stand-in
  *        box for every one, where it was last seen (kept as <part>_seen), so
  *        parts not on the screen can be placed too. Proven in game.
+ * 0.12.1: the item window's text moves with it everywhere (DrawText_UseGuide
+ *        and plain DrawText were not followed); the bag counts what is in it
+ *        now, not what the game last saved; an effect with two values (a Red
+ *        Stingshroom's attack and damage up) shown once, a row a line; the
+ *        "Tengoku blueprint on this floor" line is back - the floor's roll,
+ *        made when it loads, says which chests hold one; and the other
+ *        blueprints still on the floor: a line when one is a ???, or each
+ *        named, as the game names them or by their real names.
  *
  * The HUD draws each weapon slot's durability as a bar. The plugin writes the
  * numbers on it - "45/60", "45" or "75%" - in the HUD's own font, through the
@@ -248,7 +256,15 @@ static void log_line(const char *fmt, ...)
  *   mushrooms=1        mushrooms left
  *   colour=FFFFFF      the text colour (red, green, blue in hex)
  *   fungus_colour=50FF50   the Fun Fungus line's own colour
- *   beasts_x=0, beasts_y=0, and mushrooms_, chests_, materials_, fungus_
+ *   tengoku=1          "Tengoku blueprint on this floor", while one is in a
+ *                      chest not yet opened or lying about
+ *   tengoku_colour=FF9628  that line's own colour
+ *   blueprints=1       the blueprints in chests not yet opened or lying about:
+ *                      0 none, 1 a line when one is a ???, 2 each as the game
+ *                      names it (??? ones as ???), 3 each by its real name
+ *   blueprint_colour=3CE6FF  their lines' own colour
+ *   beasts_x=0, beasts_y=0, and mushrooms_, chests_, materials_, fungus_,
+ *                      tengoku_, blueprints_
  *                      one line moved on its own, on top of x and y
  *
  *   [rage]
@@ -331,16 +347,27 @@ struct floor_settings {
     int show, x, y, align, size;
     int beasts, chests, materials, fungus, mushrooms;
     unsigned colour, fungus_colour;
-    int off_x[5], off_y[5];     /* each line moved on its own (FLOOR_LINES) */
+    int off_x[7], off_y[7];     /* each line moved on its own (FLOOR_LINES) */
     int background;
+    int tengoku;
+    unsigned tengoku_colour;
+    int blueprints;             /* BP_ */
+    unsigned blueprint_colour;
 };
-static struct floor_settings g_floor = {1, 1880, 200, 2, 80, 1, 1, 1, 1, 1, 0xFFFFFF, 0x50FF50, {0}, {0}, 0};
+static struct floor_settings g_floor = {1, 1880, 200, 2, 80, 1, 1, 1, 1, 1, 0xFFFFFF, 0x50FF50, {0}, {0}, 0,
+                                        1, 0xFF9628, 1, 0x3CE6FF};
+
+/* The blueprints on the floor: none, only a line when there is a ??? one,
+ * each as the game names it (??? ones as ???), or each by its real name. */
+enum { BP_OFF, BP_UNKNOWN, BP_AS_SHOWN, BP_REAL_NAMES };
 
 /* The pieces of a part that can be moved on their own, and their names in
  * lid-hud.ini. */
 static const wchar_t *SLOT_KEYS[6] = {L"right1", L"right2", L"right3", L"left1", L"left2", L"left3"};
-enum { LINE_BEASTS, LINE_MUSHROOMS, LINE_CHESTS, LINE_MATERIALS, LINE_FUNGUS, FLOOR_LINES };
-static const wchar_t *LINE_KEYS[FLOOR_LINES] = {L"beasts", L"mushrooms", L"chests", L"materials", L"fungus"};
+enum { LINE_BEASTS, LINE_MUSHROOMS, LINE_CHESTS, LINE_MATERIALS, LINE_FUNGUS, LINE_TENGOKU, LINE_BLUEPRINTS,
+       FLOOR_LINES };
+static const wchar_t *LINE_KEYS[FLOOR_LINES] = {L"beasts", L"mushrooms", L"chests", L"materials", L"fungus",
+                                                L"tengoku", L"blueprints"};
 
 struct rage_settings {
     int show, gain, x, y, align, size;
@@ -397,9 +424,15 @@ static struct menu_settings g_menu = {100, 1, 1};
  * rage (top left) and status notices (top right) (status_group), the quick
  * use panel's item box (top) (quick_use_group), and along the bottom, from
  * either panel, each hand's weapon slots in its corner with the decals
- * between them (bottom_group). */
+ * between them (bottom_group).
+ *
+ * The quick items' buttons (the guide under the item box, "Back" and the
+ * rest) are drawn by the quick use panel too, through a function of their
+ * own. They go with the item box: their move and size are on top of Quick
+ * items' (part_follows), so they can be hidden, or placed apart, without
+ * leaving the box they belong to. */
 enum { GP_HEALTH, GP_NOTICES, GP_LEFT, GP_RIGHT, GP_DECALS, GP_QUICK, GP_TIMER, GP_BOSS, GP_FLOOR_TITLE, GP_MESSAGES, GP_ITEMS,
-       GP_RETICLE, GP_SUBTITLES, GP_BUTTONS, GAME_PARTS };
+       GP_RETICLE, GP_SUBTITLES, GP_BUTTONS, GP_QUICK_BUTTONS, GAME_PARTS };
 #define GP_STATUS_GROUPS 5      /* the first five are drawn by the status or the quick use panel */
 struct game_part_settings {
     int show, x, y, size;
@@ -439,7 +472,15 @@ static const struct {
     {L"Subtitles", L"subtitles", L"mSubtitle", "UBrgUIHUD_SubtitleexecRenderProcess", {460, 900, 1460, 980}},
     {L"Button guide", L"button_guide", L"mButtonGuide", "UBrgUIHUD_ButtonGuideexecRenderProcess",
      {40, 1030, 1880, 1075}},
+    {L"Quick item buttons", L"quick_use_buttons", L"mQuickuse", "UBrgUIHUD_QuickUseexecDrawQuickUseItemButtonGuide",
+     {1500, 260, 1880, 320}},
 };
+
+/* The part whose move and size part `n` goes on top of, or -1. */
+static int part_follows(int n)
+{
+    return n == GP_QUICK_BUTTONS ? GP_QUICK : -1;
+}
 
 /* The HUD's drawing calls the game's parts go through (by their native
  * wrappers' names, "ABrgHUDBaseexec" + name), in the order of the hooks
@@ -484,9 +525,13 @@ static int status_group(float x, float y)
  * move and size put it on the screen. */
 static void moved_rect(int n, const float r[4], float out[4])
 {
-    float k = g_gp[n].size / 100.0f;
+    float k = g_gp[n].size / 100.0f, in[4];
     int i;
 
+    if (part_follows(n) >= 0) {
+        moved_rect(part_follows(n), r, in);
+        r = in;
+    }
     for (i = 0; i < 4; i++) {
         float half = i % 2 ? 540.0f : 960.0f;           /* the middle of the screen */
         int move = i % 2 ? g_gp[n].y : g_gp[n].x;
@@ -633,6 +678,10 @@ static void read_settings(void)
         f.colour = ini_colour(L"floor", L"colour", 0xFFFFFF, 0);
         f.fungus_colour = ini_colour(L"floor", L"fungus_colour", 0x50FF50, 0);
         f.background = ini_int(L"floor", L"background", 0, 0, 1);
+        f.tengoku = ini_int(L"floor", L"tengoku", 1, 0, 1);
+        f.tengoku_colour = ini_colour(L"floor", L"tengoku_colour", 0xFF9628, 0);
+        f.blueprints = ini_int(L"floor", L"blueprints", BP_UNKNOWN, BP_OFF, BP_REAL_NAMES);
+        f.blueprint_colour = ini_colour(L"floor", L"blueprint_colour", 0x3CE6FF, 0);
         {
             wchar_t key[24];
             int i;
@@ -908,6 +957,8 @@ static unsigned char *native_named(struct pieces *pc, const char *name)
     return NULL;
 }
 
+static void *function_start(const struct pieces *pc, const void *p);
+
 /* The function-table slot a native wrapper calls: its last `call [reg+N]`
  * before the end of the function. */
 static int wrapper_slot(struct pieces *pc, const char *name)
@@ -919,7 +970,9 @@ static int wrapper_slot(struct pieces *pc, const char *name)
         return 0;
     for (i = 0; i < 0x400; i++) {
         if (f[i] == 0xC3) {
-            if (f[i + 1] == 0xCC)
+            /* its end: padding after it, or the next function straight after
+             * it (DrawText_UseGuide's in 1.92), whose slot is not this one's */
+            if (f[i + 1] == 0xCC || function_start(pc, f + i + 1) == f + i + 1)
                 break;
         } else if (f[i] == 0xFF && f[i + 1] != 0x94 && (f[i + 1] & 0xF8) == 0x90) {
             int32_t d = rd32(f + i + 2);
@@ -2356,21 +2409,33 @@ static int transform_fields(void *hud, uint32_t **flag, uint32_t *bit, float **m
 static int part_moved(int n)
 {
     const struct game_part_settings *g = &g_gp[n];
-    return (!g->show && !g_layout.on) || g->x || g->y || g->size != 100;
+    return (!g->show && !g_layout.on) || g->x || g->y || g->size != 100 ||
+           (part_follows(n) >= 0 && part_moved(part_follows(n)));
+}
+
+/* Part `n`'s size, with the one it follows. */
+static float part_scale(int n)
+{
+    return g_gp[n].size / 100.0f * (part_follows(n) >= 0 ? part_scale(part_follows(n)) : 1);
 }
 
 /* Part `n`'s transform: its move and size on top of `game` (the transform
- * that was on, or NULL for none). The layout mode shows hidden parts, to
- * place them. */
+ * that was on, or NULL for none), and of the part it follows. The layout
+ * mode shows hidden parts, to place them. */
 static void part_matrix(int n, const float *game, float out[6])
 {
     static const float none[6] = {1, 0, 0, 0, 1, 0};
     const struct game_part_settings *g = &g_gp[n];
+    float followed[6];
     const float *e = game ? game : none;
     float k = g->size / 100.0f;
     float ox = GP_PIVOT_X * (1 - k) + g->x * 2 + (!g->show && !g_layout.on ? GP_AWAY : 0);
     float oy = GP_PIVOT_Y * (1 - k) + g->y * 2;
 
+    if (part_follows(n) >= 0) {
+        part_matrix(part_follows(n), game, followed);
+        e = followed;
+    }
     out[0] = k * e[0];
     out[1] = k * e[1];
     out[2] = k * e[2] + ox;
@@ -2609,8 +2674,10 @@ static const struct {
     {"DrawNumberCenter_UseGuide", TP_GUIDE, 6}, {"DrawNumberLeft_UseGuide", TP_GUIDE, 6},
     {"DrawTimeText_UseGuide", TP_GUIDE, 11}, {"DrawTimeTextRight_UseGuide", TP_GUIDE, 10},
     {"DrawNumber", TP_SCREEN, 1}, {"DrawShadowString", TP_SCREEN, 1}, {"DrawTimeText", TP_SCREEN, 1},
+    {"DrawText", TP_SCREEN, 1},
 };
 #define TEXTS ((int)(sizeof TEXT / sizeof TEXT[0]))
+#define TEXT_DRAW_TEXT 19       /* TEXT[] "DrawText" */
 
 static struct { void **table; void *original[TEXTS]; } g_text_hooked[4];
 static int g_text_nhooked;
@@ -2649,8 +2716,43 @@ static void *text_original(void *font, int i)
 struct text_win {
     int on, scaled;
     uint32_t was;
-    float keep[6], *sx, *sy, scale[2];
+    float keep[6], *sx, *sy, scale[2], k;
+    int32_t *width, width_was;
 };
+
+/* The text state a line at (x, y) on the screen is drawn with: the font
+ * renderer's own (its mState), set by the part just before - the escalator's
+ * floor and its name in the Button guide are drawn that way. NULL if the
+ * renderer has no such field. */
+static void *renderer_state(void *font)
+{
+    static ptrdiff_t at = -2;
+    unsigned char *f;
+
+    if (!font || !readable(font, 0x100))
+        return NULL;
+    if (at == -2)
+        at = (f = field_of(class_of(font), L"mState")) ? offset_of(f) : -1;
+    return at < 0 ? NULL : (unsigned char *)font + at;
+}
+
+/* An image's width as the font renderer reads it (mUseSizeX), or NULL. */
+static int32_t *image_use_width(void *image)
+{
+    static ptrdiff_t at = -1;
+    unsigned char *f;
+    int32_t *p;
+
+    if (!image || !readable(image, 0x100))
+        return NULL;
+    if (at < 0) {
+        if (!(f = field_of(class_of(image), L"mUseSizeX")))
+            return NULL;
+        at = offset_of(f);
+    }
+    p = (int32_t *)((unsigned char *)image + at);
+    return readable(p, 4) ? p : NULL;
+}
 
 /* Where an image is, in the game's drawing space. */
 static int image_place(void *image, float *x, float *y)
@@ -2714,13 +2816,14 @@ static uint64_t from_float(uint64_t v, float f)
 static void text_enter(int i, const uint64_t *arg, float *x, float *y, struct text_win *t)
 {
     static uint64_t said[GAME_PARTS];   /* bit i: game text call i logged; i + 32: ours */
-    void *state = TEXT[i].place == TP_SCREEN ? NULL : (void *)arg[1];
+    void *state = TEXT[i].place == TP_SCREEN ? renderer_state((void *)arg[0]) : (void *)arg[1];
     float px = 0, py = 0, sx, sy, tx, ty, m[6], dx, dy, k, det;
     const float *pre = NULL;
     ptrdiff_t at_sx, at_sy;
     int n;
 
     t->on = t->scaled = 0;
+    t->k = 1;
     if (g_drawing < 0 || !g_frame.ok)
         return;
     if (TEXT[i].place == TP_IMAGE && !image_place((void *)arg[2], &px, &py))
@@ -2785,7 +2888,7 @@ static void text_enter(int i, const uint64_t *arg, float *x, float *y, struct te
         *g_frame.flag &= ~g_frame.bit;
     }
 
-    k = g_gp[n].size / 100.0f;
+    k = part_scale(n);
     text_scale_at(&at_sx, &at_sy);
     if (k != 1 && state && at_sx >= 0 && readable((unsigned char *)state + at_sx, 4) &&
         readable((unsigned char *)state + at_sy, 4)) {
@@ -2796,6 +2899,19 @@ static void text_enter(int i, const uint64_t *arg, float *x, float *y, struct te
         *t->sx *= k;
         *t->sy *= k;
         t->scaled = 1;
+        t->k = k;
+    }
+    /* A line set against an image can be centred on it (or put at its right
+     * edge, or squeezed to fit it): the renderer works that out from the
+     * image's width, which has to be sized with the part as well, or a
+     * smaller Messages window has its quest text off to the right. */
+    t->width = NULL;
+    if (k != 1 && TEXT[i].place != TP_SCREEN && (t->width = image_use_width((void *)arg[2])) &&
+        *t->width > 0 && *t->width < 8192) {
+        t->width_was = *t->width;
+        *t->width = (int32_t)(*t->width * k + 0.5f);
+    } else {
+        t->width = NULL;
     }
 }
 
@@ -2812,6 +2928,8 @@ static void text_leave(const struct text_win *t)
         *t->sx = t->scale[0];
         *t->sy = t->scale[1];
     }
+    if (t->width)
+        *t->width = t->width_was;
 }
 
 /* The lines against an image or a guide take only pointers and whole numbers
@@ -2825,13 +2943,85 @@ typedef float (*text_fn)(void *, TEXT_ARGS);
 typedef float (*text_xy_fn)(void *, float, float, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
                             uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 
-static float text_call(int i, void *font, uint64_t *a)
+/* lid-hud.ini [debug] trace=1: each place in the game that draws text or an
+ * image is logged once (up to TRACE_MOST), with the game part drawing at the
+ * time and any text it draws - to find what draws a window that does not
+ * follow its part. Off unless asked for. */
+#define TRACE_MOST 800
+static int trace_on(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = g_ini_path[0] ? (int)GetPrivateProfileIntW(L"debug", L"trace", 0, g_ini_path) : 0;
+    return on > 0;
+}
+
+/* The text of an FString pointed at by one of `a` (before `upto`), if any. */
+static int trace_string(const uint64_t *a, int upto, wchar_t *out, int cap)
+{
+    int k;
+    for (k = 1; k < upto; k++) {
+        const unsigned char *p = (const unsigned char *)a[k];
+        const wchar_t *s;
+        int32_t num;
+        if (!p || !readable(p, 16))
+            continue;
+        s = *(const wchar_t *const *)p;
+        num = *(const int32_t *)(p + 8);
+        if (num < 2 || num > 512 || !s || !readable(s, (size_t)num * 2) || s[num - 1] != 0)
+            continue;
+        wcsncpy(out, s, cap - 1);
+        out[cap - 1] = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static void trace_call(const char *kind, const char *name, void *ret, float x, float y, const uint64_t *a, int upto)
+{
+    static struct { void *ret; int part; } seen[TRACE_MOST];
+    static int n;
+    wchar_t text[64];
+    char chain[160];
+    void *frames[12];
+    size_t size = ((IMAGE_NT_HEADERS64 *)(g_pc.base + ((IMAGE_DOS_HEADER *)g_pc.base)->e_lfanew))
+                      ->OptionalHeader.SizeOfImage, used = 0;
+    int k, got;
+
+    if (!trace_on() || n >= TRACE_MOST)
+        return;
+    for (k = 0; k < n; k++)
+        if (seen[k].ret == ret && seen[k].part == g_drawing)
+            return;
+    seen[n].ret = ret;
+    seen[n].part = g_drawing;
+    n++;
+    text[0] = 0;
+    if (a)
+        trace_string(a, upto, text, 64);
+    /* the game's functions above this call (the plugin's own frames left out) */
+    chain[0] = 0;
+    got = RtlCaptureStackBackTrace(0, 12, frames, NULL);
+    for (k = 0; k < got && used < sizeof chain - 16; k++) {
+        unsigned char *f = frames[k];
+        if (f < g_pc.base || f >= g_pc.base + size || f == ret)
+            continue;
+        used += snprintf(chain + used, sizeof chain - used, " <- %llX", (unsigned long long)(f - g_pc.base));
+    }
+    log_line("trace: %s %s from game+0x%llX, part %ls, depth %d/%d, at %.0f, %.0f%s%ls%s |%s", kind, name,
+             (unsigned long long)((unsigned char *)ret - g_pc.base),
+             g_drawing >= 0 ? GAME_PART[g_drawing].name : L"(none)", g_draw_depth, g_text_depth, x, y,
+             text[0] ? " \"" : "", text, text[0] ? "\"" : "", chain);
+}
+
+static float text_call(int i, void *font, uint64_t *a, void *ret)
 {
     text_fn f = (text_fn)text_original(font, i);
     struct text_win t;
     float x = as_float(a[TEXT[i].add]), y = as_float(a[TEXT[i].add + 1]), r;
 
     a[0] = (uint64_t)font;
+    trace_call("text", TEXT[i].name, ret, x, y, a, TEXT[i].add);
     t.on = t.scaled = 0;
     if (!g_text_depth++) {
         text_enter(i, a, &x, &y, &t);
@@ -2845,16 +3035,25 @@ static float text_call(int i, void *font, uint64_t *a)
     return r;
 }
 
-static float text_xy_call(int i, void *font, float x, float y, uint64_t *a)
+static float text_xy_call(int i, void *font, float x, float y, uint64_t *a, void *ret)
 {
     text_xy_fn f = (text_xy_fn)text_original(font, i);
     struct text_win t;
     float r;
 
     a[0] = (uint64_t)font;
+    trace_call("text", TEXT[i].name, ret, x, y, a, 6);
     t.on = t.scaled = 0;
-    if (!g_text_depth++)
+    if (!g_text_depth++) {
         text_enter(i, a, &x, &y, &t);
+        /* DrawText (this, x, y, text, three flags, the width to fit it in, ...):
+         * a sized line fits a width sized with it */
+        if (t.scaled && i == TEXT_DRAW_TEXT) {
+            float fit = as_float(a[7]);
+            if (fit > 0 && fit < 16384)
+                a[7] = from_float(a[7], fit * t.k);
+        }
+    }
     r = f ? f(font, x, y, a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15],
               a[16]) : 0;
     text_leave(&t);
@@ -2864,19 +3063,19 @@ static float text_xy_call(int i, void *font, float x, float y, uint64_t *a)
 
 #define TEXT_HOOK(i) static float text_hook_##i(void *font, TEXT_ARGS) \
     { uint64_t a[17] = {0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16}; \
-      return text_call(i, font, a); }
+      return text_call(i, font, a, __builtin_return_address(0)); }
 #define TEXT_XY_HOOK(i) static float text_hook_##i(void *font, float x, float y, uint64_t a3, uint64_t a4, \
     uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, \
     uint64_t a13, uint64_t a14, uint64_t a15, uint64_t a16) \
     { uint64_t a[17] = {0, 0, 0, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16}; \
-      return text_xy_call(i, font, x, y, a); }
+      return text_xy_call(i, font, x, y, a, __builtin_return_address(0)); }
 TEXT_HOOK(0) TEXT_HOOK(1) TEXT_HOOK(2) TEXT_HOOK(3) TEXT_HOOK(4) TEXT_HOOK(5) TEXT_HOOK(6) TEXT_HOOK(7)
 TEXT_HOOK(8) TEXT_HOOK(9) TEXT_HOOK(10) TEXT_HOOK(11) TEXT_HOOK(12) TEXT_HOOK(13) TEXT_HOOK(14) TEXT_HOOK(15)
-TEXT_XY_HOOK(16) TEXT_XY_HOOK(17) TEXT_XY_HOOK(18)
+TEXT_XY_HOOK(16) TEXT_XY_HOOK(17) TEXT_XY_HOOK(18) TEXT_XY_HOOK(19)
 static void *const TEXT_HOOKS[TEXTS] = {
     text_hook_0, text_hook_1, text_hook_2, text_hook_3, text_hook_4, text_hook_5, text_hook_6, text_hook_7,
     text_hook_8, text_hook_9, text_hook_10, text_hook_11, text_hook_12, text_hook_13, text_hook_14, text_hook_15,
-    text_hook_16, text_hook_17, text_hook_18};
+    text_hook_16, text_hook_17, text_hook_18, text_hook_19};
 
 /* Put the text hooks in the font renderer's function table, once per table. */
 static void hook_texts(void *font)
@@ -2943,18 +3142,19 @@ static void *draw_original(void *hud, int i)
     return g_draw_nhooked ? g_draw_hooked[0].original[i] : NULL;
 }
 
+#define DRAW_TRACE(i, x, y) trace_call("draw", DRAW[i].name, __builtin_return_address(0), x, y, NULL, 0)
 #define DRAW_HOOK_F(i) static void draw_hook_##i(void *hud, float a, float b, float c, DRAW_STACK) \
-    { draw_f_fn f = (draw_f_fn)draw_original(hud, i); struct draw_win w; draw_enter(hud, a, b, NULL, &w); \
-      if (f) f(hud, a, b, c, DRAW_PASS); draw_leave(&w); }
+    { draw_f_fn f = (draw_f_fn)draw_original(hud, i); struct draw_win w; DRAW_TRACE(i, a, b); \
+      draw_enter(hud, a, b, NULL, &w); if (f) f(hud, a, b, c, DRAW_PASS); draw_leave(&w); }
 #define DRAW_HOOK_I(i) static void draw_hook_##i(void *hud, float a, float b, uint64_t c, DRAW_STACK) \
-    { draw_i_fn f = (draw_i_fn)draw_original(hud, i); struct draw_win w; \
+    { draw_i_fn f = (draw_i_fn)draw_original(hud, i); struct draw_win w; DRAW_TRACE(i, a, b); \
       draw_enter(hud, a, b, DRAW[i].image ? (void *)c : NULL, &w); if (f) f(hud, a, b, c, DRAW_PASS); draw_leave(&w); }
 #define DRAW_HOOK_T(i) static float draw_hook_##i(void *hud, float a, float b, uint64_t c, DRAW_STACK) \
-    { draw_t_fn f = (draw_t_fn)draw_original(hud, i); struct draw_win w; float r = 0; \
+    { draw_t_fn f = (draw_t_fn)draw_original(hud, i); struct draw_win w; float r = 0; DRAW_TRACE(i, a, b); \
       draw_enter(hud, a, b, NULL, &w); if (f) r = f(hud, a, b, c, DRAW_PASS); draw_leave(&w); return r; }
 #define DRAW_HOOK_R(i) static void draw_hook_##i(void *hud, uint64_t a, uint64_t b, float c, DRAW_STACK) \
-    { draw_r_fn f = (draw_r_fn)draw_original(hud, i); struct draw_win w; draw_enter(hud, c, as_float(s5), NULL, &w); \
-      if (f) f(hud, a, b, c, DRAW_PASS); draw_leave(&w); }
+    { draw_r_fn f = (draw_r_fn)draw_original(hud, i); struct draw_win w; DRAW_TRACE(i, c, as_float(s5)); \
+      draw_enter(hud, c, as_float(s5), NULL, &w); if (f) f(hud, a, b, c, DRAW_PASS); draw_leave(&w); }
 
 DRAW_HOOK_I(0) DRAW_HOOK_F(1) DRAW_HOOK_F(2) DRAW_HOOK_F(3) DRAW_HOOK_F(4) DRAW_HOOK_F(5) DRAW_HOOK_R(6)
 DRAW_HOOK_F(7) DRAW_HOOK_F(8) DRAW_HOOK_I(9) DRAW_HOOK_I(10) DRAW_HOOK_F(11) DRAW_HOOK_F(12) DRAW_HOOK_F(13)
@@ -3027,9 +3227,42 @@ static void game_part_render(int n, void *panel, void *hud)
 
 #define GP_HOOK(n) static void gp_hook_##n(void *panel, void *hud) { game_part_render(n, panel, hud); }
 GP_HOOK(5) GP_HOOK(6) GP_HOOK(7) GP_HOOK(8) GP_HOOK(9) GP_HOOK(10) GP_HOOK(11) GP_HOOK(12) GP_HOOK(13)
+
+/* The quick items' buttons: drawn by the quick use panel from its own
+ * drawing (this, the HUD, and how far shown, 0 to 1), so while it is drawing
+ * they are a part of their own for as long as they draw, then it goes on. */
+typedef void (*quick_buttons_fn)(void *panel, void *hud, float shown);
+
+static void gp_hook_quick_buttons(void *panel, void *hud, float shown)
+{
+    void **table = panel ? *(void ***)panel : NULL;
+    quick_buttons_fn original = NULL;
+    int i, n = GP_QUICK_BUTTONS;
+
+    for (i = 0; i < g_gp_nhooked[n]; i++)
+        if (g_gp_hooked[n][i].table == table)
+            original = (quick_buttons_fn)g_gp_hooked[n][i].original;
+    if (!original && g_gp_nhooked[n])
+        original = (quick_buttons_fn)g_gp_hooked[n][0].original;
+    if (!original)
+        return;
+    if (g_drawing == GP_QUICK) {
+        g_drawing = n;
+        original(panel, hud, shown);
+        g_drawing = GP_QUICK;
+    } else if (g_drawing >= 0) {
+        original(panel, hud, shown);
+    } else {
+        frame_begin(n, hud);
+        original(panel, hud, shown);
+        frame_end();
+    }
+}
+
 static const status_render_fn GP_HOOKS[GAME_PARTS] = {NULL, NULL, NULL, NULL, NULL, gp_hook_5, gp_hook_6,
                                                       gp_hook_7, gp_hook_8, gp_hook_9, gp_hook_10, gp_hook_11,
-                                                      gp_hook_12};
+                                                      gp_hook_12, gp_hook_13,
+                                                      (status_render_fn)(void *)gp_hook_quick_buttons};
 
 /* Hook part `n`'s drawing, once per function table (the player status panel
  * has its own hook, status_render_hook, which does the same for its four). */
@@ -4265,9 +4498,9 @@ static void hook_icons(void *render)
  * Fun Fungus. Chests and pickups are the level's treasure actors
  * (BrgActor_Treasure): a chest is a BrgActor_Treasure_Box, a pickup says what
  * it is in mTreasureType (8 material, 1 mushroom - the Fun Fungus is
- * MSR_022). Blueprints are not counted: one only turns up when a chest is
- * opened or an enemy dies. Counted twice a second, never in the Waiting Room. */
-enum { TREASURE_MUSHROOM = 1, TREASURE_MATERIAL = 8, TREASURE_FADING = 3 };
+ * MSR_022). Blueprints are known before their chests are opened (see
+ * floor_blueprints). Counted twice a second, never in the Waiting Room. */
+enum { TREASURE_MUSHROOM = 1, TREASURE_MATERIAL = 8, TREASURE_RMAP = 9, TREASURE_FADING = 3 };
 #define FUN_FUNGUS L"MSR_022"
 
 static struct {
@@ -4330,8 +4563,262 @@ static int treasure_gone(void *a, unsigned char state)
            get_bool(a, L"mDeleteComp") || get_bool(a, L"mUnregist");
 }
 
+/* lid-hud.ini [debug] chests=1: what the chests on a floor hold, to the log.
+ * The game rolls a whole floor when it loads: the stage manager's
+ * mCurrentFloor has the Kill Coins in each case (mTbms), the parts (mTbps)
+ * and the items (mTbis), each for a chest's unit and spawn point (mUnit,
+ * mPntid), the same two the chest itself carries in its
+ * mDbTrBoxRewardMoney. Written on arriving at a floor, and the chests and
+ * parts lying about a few seconds after, when they are all there. */
+static int chests_on(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = g_ini_path[0] ? (int)GetPrivateProfileIntW(L"debug", L"chests", 0, g_ini_path) : 0;
+    return on > 0;
+}
+
+/* `field` of the struct at `p` (laid out by `def`) as text, added to `out`. */
+static void field_text(unsigned char *def, unsigned char *p, const wchar_t *field, int is_text, wchar_t *out, int size)
+{
+    unsigned char *f = def ? field_of(def, field) : NULL;
+    int len = lstrlenW(out);
+
+    if (!f || len >= size - 8)
+        return;
+    if (is_text) {
+        struct fstring *s = (void *)(p + offset_of(f));
+        if (s->data && s->count > 1 && s->count < 96 && readable(s->data, (size_t)s->count * 2))
+            swprintf(out + len, (size_t)(size - len), L" %ls=%ls", field, s->data);
+        else
+            swprintf(out + len, (size_t)(size - len), L" %ls=-", field);
+    } else {
+        swprintf(out + len, (size_t)(size - len), L" %ls=%d", field, *(int32_t *)(p + offset_of(f)));
+    }
+}
+
+static void log_reward_list(unsigned char *floor_def, unsigned char *floor, const wchar_t *list,
+                            const wchar_t *const *texts, const wchar_t *const *numbers)
+{
+    unsigned char *f = field_of(floor_def, list), *inner, *def;
+    struct { unsigned char *data; int32_t count, max; } *arr;
+    uint32_t stride;
+    wchar_t line[400];
+    int i, k;
+
+    if (!f || !(inner = *(unsigned char **)(f + PROP_INNER)) || !readable(inner, 0x100) ||
+        !(def = *(unsigned char **)(inner + PROP_INNER)) || !readable(def, 0x100)) {
+        log_line("chests: no %ls list", list);
+        return;
+    }
+    stride = *(uint32_t *)(inner + PROP_SIZE);
+    arr = (void *)(floor + offset_of(f));
+    if (!readable(arr, 16) || arr->count < 0 || arr->count > 1000 || stride < 8 || stride > 0x1000 ||
+        (arr->count && (!arr->data || !readable(arr->data, (size_t)arr->count * stride)))) {
+        log_line("chests: %ls cannot be read", list);
+        return;
+    }
+    log_line("chests: %ls has %d", list, arr->count);
+    for (i = 0; i < arr->count && i < 80; i++) {
+        unsigned char *e = arr->data + (size_t)i * stride;
+        line[0] = 0;
+        for (k = 0; texts[k]; k++)
+            field_text(def, e, texts[k], 1, line, 400);
+        for (k = 0; numbers[k]; k++)
+            field_text(def, e, numbers[k], 0, line, 400);
+        log_line("chests:   %ls %d:%ls", list, i, line);
+    }
+}
+
+static void log_floor_rewards(void *stage)
+{
+    static const wchar_t *const money_t[] = {L"mUnit", L"mPntid", L"mType", L"mApid", L"mGenid", NULL};
+    static const wchar_t *const money_n[] = {L"mMoney", L"mPrio", NULL};
+    static const wchar_t *const part_t[] = {L"mUnit", L"mPntid", L"mType", L"mGenid", L"mPtid", L"mEptid", NULL};
+    static const wchar_t *const part_n[] = {L"mGrade", L"mRest", L"mDur", L"mSpare", L"mPrio", NULL};
+    static const wchar_t *const item_t[] = {L"mUnit", L"mPntid", L"mType", L"mGenid", L"mItemId", L"mEitemid", NULL};
+    static const wchar_t *const item_n[] = {L"mPrio", NULL};
+    unsigned char *f = field_of(class_of(stage), L"mCurrentFloor"), *def, *floor;
+    wchar_t line[200];
+
+    if (!f || !(def = *(unsigned char **)(f + PROP_INNER)) || !readable(def, 0x100)) {
+        log_line("chests: the stage manager has no current floor");
+        return;
+    }
+    floor = (unsigned char *)stage + offset_of(f);
+    line[0] = 0;
+    field_text(def, floor, L"mFlrid", 1, line, 200);
+    field_text(def, floor, L"mAreaid", 1, line, 200);
+    field_text(def, floor, L"mFlrno", 0, line, 200);
+    log_line("chests: the floor's roll -%ls", line);
+    log_reward_list(def, floor, L"mTbms", money_t, money_n);
+    log_reward_list(def, floor, L"mTbps", part_t, part_n);
+    log_reward_list(def, floor, L"mTbis", item_t, item_n);
+}
+
+/* Each chest, and each part or item lying about (not mushrooms or
+ * materials), with what it carries itself. */
+static void log_floor_chests(void *actors_p)
+{
+    struct { void **data; int32_t count, max; } *actors = actors_p;
+    static const wchar_t *const money_t[] = {L"mUnit", L"mPntid", L"mType", NULL};
+    int i, n = 0;
+
+    for (i = 0; i < actors->count && n < 120; i++) {
+        void *a = actors->data[i];
+        unsigned char *type, *state, *f, *def;
+        int kind, k, *box;
+        wchar_t line[400];
+        if (!a || !readable(a, 0x60) || ((kind = actor_kind(class_of(a))) != KIND_CHEST && kind != KIND_TREASURE))
+            continue;
+        if (!(type = value_at(a, L"mTreasureType", 1)) || !(state = value_at(a, L"mState", 1)))
+            continue;
+        if (kind == KIND_TREASURE && (*type == TREASURE_MUSHROOM || *type == TREASURE_MATERIAL))
+            continue;
+        n++;
+        box = kind == KIND_CHEST ? value_at(a, L"mTreasureBoxType", 4) : NULL;
+        swprintf(line, 400, L"%ls type %d, state %d%ls", kind == KIND_CHEST ? L"chest" : L"lying", *type, *state,
+                 kind == KIND_CHEST && get_bool(a, L"mOpen") ? L", open" : L"");
+        if (box)
+            swprintf(line + lstrlenW(line), 40, L", box %d", *box);
+        if ((f = field_of(class_of(a), L"mDbTrBoxRewardMoney")) && (def = *(unsigned char **)(f + PROP_INNER)) &&
+            readable(def, 0x100)) {
+            for (k = 0; money_t[k]; k++)
+                field_text(def, (unsigned char *)a + offset_of(f), money_t[k], 1, line, 400);
+            field_text(def, (unsigned char *)a + offset_of(f), L"mMoney", 0, line, 400);
+        }
+        if ((f = field_of(class_of(a), L"mDbPart")) && (def = *(unsigned char **)(f + PROP_INNER)) &&
+            readable(def, 0x100))
+            field_text(def, (unsigned char *)a + offset_of(f), L"Mid", 1, line, 400);
+        if ((f = field_of(class_of(a), L"mDbItemEntity")) && (def = *(unsigned char **)(f + PROP_INNER)) &&
+            readable(def, 0x100)) {
+            field_text(def, (unsigned char *)a + offset_of(f), L"mItemId", 1, line, 400);
+            field_text(def, (unsigned char *)a + offset_of(f), L"mEitemid", 1, line, 400);
+        }
+        log_line("chests:   %ls", line);
+    }
+    log_line("chests: %d chests and things lying about", n);
+}
+
+/* ---- the blueprints on the floor. The floor's roll (mCurrentFloor.mTbis)
+ * says which chests hold one, by unit and spawn point; one counts while its
+ * chest is not yet opened (or is not found), and once out, while it lies
+ * about - one an enemy drops too. The Tengoku ones are the 56 whose id ends
+ * in H4 (H4U for their ??? ones). */
+static int is_tengoku_id(const struct fstring *s)
+{
+    int n;
+
+    if (!s || !s->data || s->count < 4 || s->count > 64 || !readable(s->data, (size_t)s->count * 2))
+        return 0;
+    n = s->count - 1;   /* without the ending 0 */
+    if (n >= 3 && s->data[n - 1] == L'U')
+        n--;
+    return s->data[n - 2] == L'H' && s->data[n - 1] == L'4';
+}
+
+/* A blueprint's item id: ITMP_ (each one's part is PT_ with the rest). */
+static int is_blueprint_id(const struct fstring *s)
+{
+    return s && s->data && s->count > 6 && s->count < 64 && readable(s->data, (size_t)s->count * 2) &&
+           wcsncmp(s->data, L"ITMP_", 5) == 0;
+}
+
+static int same_text(const struct fstring *a, const struct fstring *b)
+{
+    return a && b && a->data && b->data && a->count == b->count && a->count > 1 && a->count < 96 &&
+           readable(a->data, (size_t)a->count * 2) && readable(b->data, (size_t)b->count * 2) &&
+           wcscmp(a->data, b->data) == 0;
+}
+
+/* A blueprint in the floor's roll: its id and its own one (mEitemid, the
+ * same on the item once it is out of its chest), and whether it lies about
+ * now. A chest holding a blueprint does not carry its unit and spawn point,
+ * so which chest holds which is not known: one is in a chest until it has
+ * been seen lying about, as many as there are blueprint chests still shut. */
+struct floor_bp {
+    const struct fstring *id, *eid;
+    int lying;
+};
+
+/* The blueprints the floor's roll puts in chests (at most `most`). */
+static int floor_blueprints(void *stage, struct floor_bp *out, int most)
+{
+    unsigned char *f = field_of(class_of(stage), L"mCurrentFloor"), *def, *list, *inner, *item, *f_id, *f_eid;
+    struct { unsigned char *data; int32_t count, max; } *arr;
+    uint32_t stride;
+    int i, n = 0;
+
+    if (!f || !(def = *(unsigned char **)(f + PROP_INNER)) || !readable(def, 0x100) ||
+        !(list = field_of(def, L"mTbis")) || !(inner = *(unsigned char **)(list + PROP_INNER)) ||
+        !readable(inner, 0x100) || !(item = *(unsigned char **)(inner + PROP_INNER)) || !readable(item, 0x100) ||
+        !(f_id = field_of(item, L"mItemId")) || !(f_eid = field_of(item, L"mEitemid")))
+        return 0;
+    stride = *(uint32_t *)(inner + PROP_SIZE);
+    arr = (void *)((unsigned char *)stage + offset_of(f) + offset_of(list));
+    if (!readable(arr, 16) || arr->count <= 0 || arr->count > 1000 || stride < 8 || stride > 0x1000 ||
+        !arr->data || !readable(arr->data, (size_t)arr->count * stride))
+        return 0;
+    for (i = 0; i < arr->count && n < most; i++) {
+        unsigned char *e = arr->data + (size_t)i * stride;
+        const struct fstring *id = (void *)(e + offset_of(f_id));
+        if (!is_blueprint_id(id))
+            continue;
+        out[n].id = id;
+        out[n].eid = (void *)(e + offset_of(f_eid));
+        out[n].lying = 0;
+        n++;
+    }
+    return n;
+}
+
+/* A blueprint lying about: its id, or NULL. */
+static const struct fstring *lying_blueprint(void *a)
+{
+    const struct fstring *id = struct_value(a, L"mDbItem", L"mItemId", sizeof(struct fstring));
+
+    if (is_blueprint_id(id))
+        return id;
+    id = struct_value(a, L"mDbItemEntity", L"mItemId", sizeof(struct fstring));
+    return is_blueprint_id(id) ? id : NULL;
+}
+
+/* A ??? blueprint: its id ends in U (each has a named twin without it). */
+static int is_unknown_id(const struct fstring *s)
+{
+    return s && s->data && s->count > 2 && s->data[s->count - 2] == L'U';
+}
+
+/* The blueprints still to be had on the floor (in a chest not yet opened, or
+ * lying about), for the floor info: their ids, kept as text. */
+#define FLOOR_BP_MOST 12
+static struct {
+    int n, unknown, tengoku;
+    wchar_t ids[FLOOR_BP_MOST][40];
+} g_bp;
+
+static void bp_add(const struct fstring *id)
+{
+    if (g_bp.n >= FLOOR_BP_MOST || !id || !id->data || id->count < 2 || id->count > 40 ||
+        !readable(id->data, (size_t)id->count * 2))
+        return;
+    lstrcpynW(g_bp.ids[g_bp.n++], id->data, 40);
+    if (is_unknown_id(id))
+        g_bp.unknown++;
+    if (is_tengoku_id(id))
+        g_bp.tengoku++;
+}
+
 static void count_floor(void)
 {
+    /* the floor's blueprints seen lying about (their own ids): out of their
+     * chests, so taken once they are gone */
+    static struct { uint32_t floor; int n; wchar_t eid[24][48]; } out;
+    struct floor_bp bps[FLOOR_BP_MOST];
+    int nbps, lying_bps = 0, lying_mine = 0, shut_bp_chests = 0, in_chests = 0, was_n = g_bp.n,
+        was_tengoku = g_bp.tengoku;
+    static DWORD chests_due;
+    static int chests_phase;    /* 1 the last floor's chests still there, 2 gone, 3 the new ones are in */
     struct { void **data; int32_t count, max; } *actors;
     unsigned char *world, *level, *state, *type;
     void *stage;
@@ -4359,6 +4846,12 @@ static void count_floor(void)
     if (!actors->data || actors->count < 1 || actors->count > 200000 ||
         !readable(actors->data, (size_t)actors->count * 8))
         return;
+    nbps = g_floor.tengoku || g_floor.blueprints ? floor_blueprints(stage, bps, FLOOR_BP_MOST) : 0;
+    g_bp.n = g_bp.unknown = g_bp.tengoku = 0;
+    if (out.floor != floor) {
+        out.floor = floor;
+        out.n = 0;
+    }
     for (i = 0; i < actors->count; i++) {
         void *a = actors->data[i];
         int kind, *health;
@@ -4373,12 +4866,40 @@ static void count_floor(void)
         if (!(state = value_at(a, L"mState", 1)))
             continue;
         if (kind == KIND_CHEST) {
-            if (!treasure_gone(a, *state) && !get_bool(a, L"mOpen"))
+            int closed = !treasure_gone(a, *state) && !get_bool(a, L"mOpen");
+            if (closed) {
                 chests++;
+                /* a blueprint chest says so in its own type */
+                if ((type = value_at(a, L"mTreasureType", 1)) && *type == TREASURE_RMAP)
+                    shut_bp_chests++;
+            }
             continue;
         }
         if (!(type = value_at(a, L"mTreasureType", 1)))
             continue;
+        if (*type == TREASURE_RMAP) {
+            const struct fstring *id, *eid;
+            int k, mine = 0;
+            if (!(g_floor.tengoku || g_floor.blueprints) || treasure_gone(a, *state) || !(id = lying_blueprint(a)))
+                continue;
+            lying_bps++;
+            eid = struct_value(a, L"mDbItemEntity", L"mEitemid", sizeof(struct fstring));
+            for (k = 0; k < nbps; k++)
+                if (same_text(bps[k].eid, eid)) {
+                    bps[k].lying = mine = 1;
+                    break;
+                }
+            if (!mine) {
+                bp_add(id);         /* not one of the floor's chests': an enemy's */
+                continue;
+            }
+            lying_mine++;
+            for (k = 0; k < out.n && wcscmp(out.eid[k], eid->data) != 0; k++)
+                ;
+            if (k == out.n && out.n < 24)
+                lstrcpynW(out.eid[out.n++], eid->data, 48);
+            continue;
+        }
         if (*type != TREASURE_MATERIAL && *type != TREASURE_MUSHROOM)
             continue;
         if (treasure_gone(a, *state))
@@ -4396,12 +4917,48 @@ static void count_floor(void)
     g_count.chests = chests;
     g_count.materials = materials;
     g_count.fungus = fungus;
+    /* the floor's own: lying about, or in a chest (not yet seen out, and no
+     * more of them than there are blueprint chests still shut) */
+    for (i = 0; i < nbps; i++) {
+        int k, seen = 0;
+        if (bps[i].lying) {
+            bp_add(bps[i].id);
+            continue;
+        }
+        for (k = 0; k < out.n && !seen; k++)
+            seen = bps[i].eid->data && bps[i].eid->count > 1 && wcscmp(out.eid[k], bps[i].eid->data) == 0;
+        if (!seen && in_chests < shut_bp_chests) {
+            in_chests++;
+            bp_add(bps[i].id);
+        }
+    }
+    if (g_bp.n != was_n || g_bp.tengoku != was_tengoku)
+        log_line("floor info: blueprints %d, ??? %d, Tengoku %d (in the floor's roll %d; blueprint chests shut %d; "
+                 "lying about %d, %d of them the roll's; taken %d)", g_bp.n, g_bp.unknown, g_bp.tengoku, nbps,
+                 shut_bp_chests, lying_bps, lying_mine, out.n - lying_mine);
     g_count.valid = 1;
     if (floor != g_count.floor) {
         g_count.floor = floor;
         log_line("floor info: beasts %d (the game counts %d), mushrooms %d (the game counts %d), chests %d, "
                  "materials %d, fun fungus %d (%d actors)", beasts, game_beasts, mushrooms,
                  game_mushrooms, chests, materials, fungus, actors->count);
+        if (chests_on()) {
+            log_floor_rewards(stage);
+            /* the floor's id changes on the escalator, with the last floor
+             * still there: its chests go, then the new floor's come */
+            chests_due = now + 120000;
+            chests_phase = 1;
+        }
+    }
+    if (chests_phase == 1 && chests == 0)
+        chests_phase = 2;
+    else if (chests_phase == 2 && chests > 0) {
+        chests_phase = 3;
+        chests_due = now + 3000;
+    }
+    if (chests_phase && (int)(now - chests_due) >= 0) {
+        chests_phase = 0;
+        log_floor_chests(actors);
     }
 }
 
@@ -4415,12 +4972,61 @@ static int hud_visible(void *panel)
     return alpha && *alpha > 0.01f && shown > 0 && (shown & 1);
 }
 
+/* A blueprint's name in the game's language: the game's own
+ * (UBrgUI_Utility.GetItemNameLocalizeText, ??? ones as the game shows them),
+ * or with `real` a ??? one's by its named twin (the id without its U). Kept
+ * once found. */
+static void blueprint_name(const wchar_t *id, int real, wchar_t *out, int size)
+{
+    static struct { wchar_t id[40]; int real; wchar_t name[64]; } cache[48];
+    static int n;
+    static void *utility;
+    wchar_t ask[40];
+    unsigned char parms[0x40], *fn, *f_ret;
+    struct fstring in, got;
+    int i, len, unknown;
+
+    for (i = 0; i < n; i++)
+        if (cache[i].real == real && wcscmp(cache[i].id, id) == 0) {
+            lstrcpynW(out, cache[i].name, size);
+            return;
+        }
+    lstrcpynW(ask, id, 40);
+    len = lstrlenW(ask);
+    if (real && len > 6 && ask[len - 1] == L'U')
+        ask[len - 1] = 0;
+    unknown = len > 6 && id[len - 1] == L'U';
+    lstrcpynW(out, real || !unknown ? ask : L"???", size);
+    if (!utility && g_pc.find_object)
+        utility = ((find_object_fn)g_pc.find_object)(NULL, (void *)(LONG_PTR)-1, L"BrgGame.Default__BrgUI_Utility", 0);
+    /* a ??? one shown as it is is never asked about: nothing gives its name away */
+    if ((real || !unknown) && utility && (fn = function_of(utility, L"GetItemNameLocalizeText")) &&
+        (f_ret = field_of(fn, L"ReturnValue")) && offset_of(f_ret) + sizeof got <= sizeof parms) {
+        in.data = ask;
+        in.count = in.max = lstrlenW(ask) + 1;
+        memset(parms, 0, sizeof parms);
+        memcpy(parms, &in, sizeof in);
+        if (call_function(utility, L"GetItemNameLocalizeText", parms, sizeof in, parms, sizeof parms) == 0) {
+            memcpy(&got, parms + offset_of(f_ret), sizeof got);
+            if (got.data && got.count > 1 && got.count < 64 && readable(got.data, (size_t)got.count * 2))
+                lstrcpynW(out, got.data, size);
+        }
+    }
+    if (n < 48) {
+        lstrcpynW(cache[n].id, id, 40);
+        cache[n].real = real;
+        lstrcpynW(cache[n].name, out, 64);
+        n++;
+    }
+    log_line("floor info: blueprint %ls%s is \"%ls\"", id, real ? " (its real name)" : "", out);
+}
+
 static void draw_floor(void *panel)
 {
-    wchar_t lines[6][64];
-    unsigned colours[6];
-    int kinds[6];
-    int n = 0, i, beasts, mushrooms, chests, materials, fungus;
+    wchar_t lines[FLOOR_LINES + FLOOR_BP_MOST][64];
+    unsigned colours[FLOOR_LINES + FLOOR_BP_MOST];
+    int kinds[FLOOR_LINES + FLOOR_BP_MOST];
+    int n = 0, i, beasts, mushrooms, chests, materials, fungus, tengoku, unknown;
     int selected = g_layout.on && !g_layout.page && g_layout.part == PART_FLOOR;
 
     if (!g_floor.show || !g_ui || (!g_layout.on && !hud_visible(panel)))
@@ -4431,12 +5037,16 @@ static void draw_floor(void *panel)
         chests = g_count.chests;
         materials = g_count.materials;
         fungus = g_count.fungus;
+        tengoku = g_bp.tengoku;
+        unknown = g_bp.unknown;
     } else if (g_layout.on) {
         beasts = 4;             /* the layout mode: a sample, to place it */
         mushrooms = 9;
         chests = 2;
         materials = 7;
         fungus = 1;
+        tengoku = 1;
+        unknown = 1;
     } else {
         return;
     }
@@ -4465,6 +5075,35 @@ static void draw_floor(void *panel)
         lstrcpynW(lines[n], L"Fun Fungus on this floor", 64);
         kinds[n] = LINE_FUNGUS;
         colours[n++] = g_floor.fungus_colour;
+    }
+    /* the Tengoku blueprint line: the same */
+    if (g_floor.tengoku && (tengoku > 0 || selected)) {
+        lstrcpynW(lines[n], L"Tengoku blueprint on this floor", 64);
+        kinds[n] = LINE_TENGOKU;
+        colours[n++] = g_floor.tengoku_colour;
+    }
+    /* the blueprints: a line when one is a ???, or a line each */
+    if (g_floor.blueprints == BP_UNKNOWN && (unknown > 0 || selected)) {
+        if (unknown > 1)
+            swprintf(lines[n], 64, L"%d unknown blueprints on this floor", unknown);
+        else
+            lstrcpynW(lines[n], L"Unknown blueprint on this floor", 64);
+        kinds[n] = LINE_BLUEPRINTS;
+        colours[n++] = g_floor.blueprint_colour;
+    } else if (g_floor.blueprints >= BP_AS_SHOWN) {
+        int real = g_floor.blueprints == BP_REAL_NAMES, k, count = g_count.valid ? g_bp.n : 0;
+        for (k = 0; k < count && n < FLOOR_LINES + FLOOR_BP_MOST; k++) {
+            wchar_t name[64];
+            blueprint_name(g_bp.ids[k], real, name, 64);
+            swprintf(lines[n], 64, L"Blueprint: %ls", name);
+            kinds[n] = LINE_BLUEPRINTS;
+            colours[n++] = g_floor.blueprint_colour;
+        }
+        if (!count && selected) {   /* the layout mode: a sample, to place it */
+            lstrcpynW(lines[n], real ? L"Blueprint: Kendo Mask" : L"Blueprint: ???", 64);
+            kinds[n] = LINE_BLUEPRINTS;
+            colours[n++] = g_floor.blueprint_colour;
+        }
     }
     /* a line under the other, each moved on its own on top of that */
     background_on(g_floor.background, 32.0f * g_floor.size / 100);
@@ -4599,6 +5238,43 @@ static void draw_block(const struct block_settings *b, int part, wchar_t lines[]
  * "this one" - 0.10.x read fighter 0's bag). Read twice a second; what they
  * say goes to the log when it changes, beside the free space and the user
  * data's slot count. */
+static int live_bag_items(void)
+{
+    static void *known_class;
+    static unsigned char *f_bag;
+    static uint32_t stride, bit;
+    static ptrdiff_t at_enable;
+    struct { unsigned char *data; int32_t count, max; } *bag;
+    int i, n = 0;
+
+    if (!g_pawn)
+        return -1;
+    if (class_of(g_pawn) != known_class) {
+        unsigned char *inner, *def, *f_enable;
+        known_class = class_of(g_pawn);
+        f_bag = field_of(known_class, L"mDeathBag");
+        if (f_bag && (inner = *(unsigned char **)(f_bag + PROP_INNER)) && readable(inner, 0x100) &&
+            (def = *(unsigned char **)(inner + PROP_INNER)) && readable(def, 0x100) &&
+            (f_enable = field_of(def, L"mEnable")) && (bit = (uint32_t)bool_bit(f_enable))) {
+            stride = *(uint32_t *)(inner + PROP_SIZE);
+            at_enable = offset_of(f_enable);
+            if (stride < 0x100 || stride > 0x2000)
+                f_bag = NULL;
+        } else {
+            f_bag = NULL;
+        }
+        log_line("bag: %s (each %u bytes)", f_bag ? "the fighter's live bag is found" : "no live bag list", stride);
+    }
+    bag = f_bag ? value_at(g_pawn, L"mDeathBag", 16) : NULL;
+    if (!bag || !bag->data || bag->count < 0 || bag->count > 512 ||
+        !readable(bag->data, (size_t)bag->count * stride))
+        return -1;
+    for (i = 0; i < bag->count; i++)
+        if (*(uint32_t *)(bag->data + (size_t)i * stride + at_enable) & bit)
+            n++;
+    return n;
+}
+
 static void draw_bag(void *panel)
 {
     static DWORD at;
@@ -4611,16 +5287,21 @@ static void draw_bag(void *panel)
         return;
     if (now - at >= 500 && g_pawn) {
         void *user = object_at(g_game, L"mUserData");
-        int chara = user ? call_returning(user, L"GetCurrentCharaIndex", NULL, 0) : -1, n = -1, max = -1;
+        int chara = user ? call_returning(user, L"GetCurrentCharaIndex", NULL, 0) : -1, n = -1, max = -1, saved = -1;
         at = now;
         if (chara >= 0) {
-            n = call_returning(g_pawn, L"GetDeathBagItemNum", &chara, 4);
+            saved = call_returning(g_pawn, L"GetDeathBagItemNum", &chara, 4);
             max = call_returning(g_pawn, L"GetDeathBagSize", &chara, 4);
+            /* the count the game keeps for the fighter changes only when it
+             * saves; the bag itself at once (eaten or thrown away) */
+            n = live_bag_items();
+            if (n < 0)
+                n = saved;
         }
         if ((n != items || max != size) && logged < 40) {
             logged++;
-            log_line("bag: fighter %d has %d of %d (free %d; the user data's slot count %d)", chara, n, max,
-                     chara >= 0 ? call_returning(g_pawn, L"GetDeathBagSpace", &chara, 4) : -1,
+            log_line("bag: fighter %d has %d of %d (the saved count %d; free %d; the user data's slot count %d)",
+                     chara, n, max, saved, chara >= 0 ? call_returning(g_pawn, L"GetDeathBagSpace", &chara, 4) : -1,
                      chara >= 0 && user ? call_returning(user, L"GetDeathBagSlotCount", &chara, 4) : -1);
         }
         items = n;
@@ -4698,18 +5379,38 @@ static void effect_words(const wchar_t *id, const wchar_t *fallback, wchar_t *ou
     log_line("effects: %ls is \"%ls\"", id, out);
 }
 
-/* `words` with "#0" made `value`. */
-static void fill_value(const wchar_t *words, float value, wchar_t *out, int size)
+/* `words` with "#0", "#1", ... made `values` (`n` of them). With no "#" in
+ * them at all but a " %" where a number belongs ("Attack Up %"), the values
+ * go there in turn. */
+static void fill_values(const wchar_t *words, const float *values, int n, wchar_t *out, int size)
 {
-    const wchar_t *at = wcsstr(words, L"#0");
-    wchar_t number[16];
+    int k = 0, has_marks = 0, next = 0;
+    const wchar_t *p;
 
-    if (!at) {
-        lstrcpynW(out, words, size);
-        return;
+    for (p = words; *p; p++)
+        if (p[0] == L'#' && p[1] >= L'0' && p[1] <= L'5')
+            has_marks = 1;
+    for (p = words; *p && k < size - 1; p++) {
+        int v = -1;
+        if (p[0] == L'#' && p[1] >= L'0' && p[1] <= L'5')
+            v = p[1] - L'0';
+        else if (!has_marks && p[0] == L' ' && p[1] == L'%' && next < n)
+            v = next;
+        if (v >= 0 && v < n) {
+            wchar_t number[16];
+            float f = values[v];
+            int m;
+            swprintf(number, 16, p[0] == L' ' ? L" %d" : L"%d", (int)(f + (f < 0 ? -0.5f : 0.5f)));
+            for (m = 0; number[m] && k < size - 1; m++)
+                out[k++] = number[m];
+            if (p[0] == L'#')
+                p++;
+            next = v + 1;
+            continue;
+        }
+        out[k++] = *p;
     }
-    swprintf(number, 16, L"%d", (int)(value + (value < 0 ? -0.5f : 0.5f)));
-    swprintf(out, (size_t)size, L"%.*ls%ls%ls", (int)(at - words), words, number, at + 2);
+    out[k] = 0;
 }
 
 static void draw_effects(void *panel)
@@ -4717,11 +5418,14 @@ static void draw_effects(void *panel)
     static unsigned char *f_id, *f_name, *f_value, *f_left;
     static uint32_t stride;
     static void *known_class;
-    wchar_t lines[8][80], words[64], name[64];
-    unsigned colours[8];
+    wchar_t lines[12][80], words[64], name[64], filled[128];
+    unsigned colours[12];
     struct { unsigned char *data; int32_t count, max; } *list;
+    /* one effect can be several entries, one per value (a Red Stingshroom's
+     * attack up and damage up), all with the same id: shown once */
+    struct { const struct fstring *id, *name; float values[6], left; int nvalues; } shown[12];
     void *pawn;
-    int i, n = 0;
+    int i, k, n = 0, nshown = 0;
 
     if (!g_effects.show || !g_ui || (!g_layout.on && !hud_visible(panel)))
         return;
@@ -4745,23 +5449,53 @@ static void draw_effects(void *panel)
     }
     list = f_id ? value_at(pawn, L"mStatusAilmentArray", 16) : NULL;
     if (list && list->data && list->count > 0 && list->count < 64 && readable(list->data, (size_t)list->count * stride))
-        for (i = 0; i < list->count && n < 8; i++) {
+        for (i = 0; i < list->count; i++) {
             unsigned char *e = list->data + i * stride;
             struct fstring *id = (void *)(e + offset_of(f_id)), *nm = (void *)(e + offset_of(f_name));
             float left = *(float *)(e + offset_of(f_left));
-            int secs;
             if (!(left > 0.05f) || !id->data || id->count < 2 || id->count > 48 ||
                 !readable(id->data, (size_t)id->count * 2))
                 continue;
-            name[0] = 0;
-            if (nm->data && nm->count > 1 && nm->count < 64 && readable(nm->data, (size_t)nm->count * 2))
-                lstrcpynW(name, nm->data, 64);
-            effect_words(id->data, name, words, 64);
-            fill_value(words, *(float *)(e + offset_of(f_value)), name, 64);
-            secs = (int)(left + 0.99f);
-            swprintf(lines[n], 80, L"%ls   %d:%02d", name, secs / 60, secs % 60);
-            colours[n++] = g_effects.colour;
+            for (k = 0; k < nshown && wcscmp(shown[k].id->data, id->data) != 0; k++)
+                ;
+            if (k == nshown) {
+                if (nshown == 12)
+                    continue;
+                shown[k].id = id;
+                shown[k].name = nm;
+                shown[k].nvalues = 0;
+                shown[k].left = 0;
+                nshown++;
+            }
+            if (shown[k].nvalues < 6)
+                shown[k].values[shown[k].nvalues++] = *(float *)(e + offset_of(f_value));
+            if (left > shown[k].left)
+                shown[k].left = left;
         }
+    for (k = 0; k < nshown && n < 12; k++) {
+        const struct fstring *nm = shown[k].name;
+        const wchar_t *line;
+        int secs = (int)(shown[k].left + 0.99f), first = 1;
+        name[0] = 0;
+        if (nm->data && nm->count > 1 && nm->count < 64 && readable(nm->data, (size_t)nm->count * 2))
+            lstrcpynW(name, nm->data, 64);
+        effect_words(shown[k].id->data, name, words, 64);
+        fill_values(words, shown[k].values, shown[k].nvalues, filled, 128);
+        /* a name of two lines ("Attack Up 75%" / "Damage Up 25%") gets a row
+         * each, the time on the first */
+        for (line = filled; line && *line && n < 12; first = 0) {
+            const wchar_t *end = wcschr(line, L'\n');
+            int len = end ? (int)(end - line) : lstrlenW(line);
+            if (len > 0 && line[len - 1] == L'\r')
+                len--;
+            if (first)
+                swprintf(lines[n], 80, L"%.*ls   %d:%02d", len, line, secs / 60, secs % 60);
+            else
+                swprintf(lines[n], 80, L"%.*ls", len, line);
+            colours[n++] = g_effects.colour;
+            line = end ? end + 1 : NULL;
+        }
+    }
     if (!n && g_layout.on) {
         lstrcpynW(lines[n], L"Attack Up 30%   0:24", 80);   /* the layout mode: a sample */
         colours[n++] = g_effects.colour;
@@ -4975,7 +5709,10 @@ static const wchar_t *ALIGNS[3] = {L"starting at x", L"centred on x", L"ending a
 static const wchar_t *PLACES[3] = {L"on the bar", L"above the bar", L"below the bar"};
 static const wchar_t *SLOT_NAMES[6] = {L"right hand, slot 1", L"right hand, slot 2", L"right hand, slot 3",
                                        L"left hand, slot 1", L"left hand, slot 2", L"left hand, slot 3"};
-static const wchar_t *LINE_NAMES[FLOOR_LINES] = {L"Beasts", L"Mushrooms", L"Chests", L"Materials", L"Fun Fungus"};
+static const wchar_t *LINE_NAMES[FLOOR_LINES] = {L"Beasts", L"Mushrooms", L"Chests", L"Materials", L"Fun Fungus",
+                                                 L"Tengoku blueprint", L"Blueprints"};
+static const wchar_t *BP_MODES[4] = {L"off", L"only say when there is a ???", L"all, as the game names them",
+                                     L"all, by their real names"};
 
 /* How many pieces a part has that move on their own (0: none). */
 static int part_items(int part)
@@ -5010,6 +5747,8 @@ static int *floor_line_switch(int line)
     case LINE_MUSHROOMS: return &g_floor.mushrooms;
     case LINE_CHESTS: return &g_floor.chests;
     case LINE_MATERIALS: return &g_floor.materials;
+    case LINE_TENGOKU: return &g_floor.tengoku;
+    case LINE_BLUEPRINTS: return &g_floor.blueprints;
     default: return &g_floor.fungus;
     }
 }
@@ -5081,6 +5820,14 @@ static const struct option OPTIONS[] = {
     {L"Floor info", L"floor", L"colour", L"Text colour", NULL, 0, 7, 1, 3, COLOUR_NAMES, &g_floor.colour},
     {L"Floor info", L"floor", L"fungus_colour", L"Fun Fungus line colour", NULL, 0, 7, 1, 4, COLOUR_NAMES,
      &g_floor.fungus_colour},
+    {L"Floor info", L"floor", L"tengoku", L"A Tengoku blueprint on the floor", &g_floor.tengoku, 0, 1, 1, 1, OFF_ON,
+     NULL},
+    {L"Floor info", L"floor", L"tengoku_colour", L"Tengoku blueprint line colour", NULL, 0, 7, 1, 1, COLOUR_NAMES,
+     &g_floor.tengoku_colour},
+    {L"Floor info", L"floor", L"blueprints", L"Blueprints on the floor", &g_floor.blueprints, BP_OFF, BP_REAL_NAMES, 1,
+     BP_UNKNOWN, BP_MODES, NULL},
+    {L"Floor info", L"floor", L"blueprint_colour", L"Blueprint line colour", NULL, 0, 7, 1, 5, COLOUR_NAMES,
+     &g_floor.blueprint_colour},
     {L"Floor info", L"floor", L"background", L"Background", &g_floor.background, 0, 1, 1, 0, OFF_ON, NULL},
     {L"Rage", L"rage", L"show", L"Show how full the gauge is", &g_rage.show, 0, 1, 1, 1, OFF_ON, NULL},
     {L"Rage", L"rage", L"gain", L"What the last hit gave", &g_rage.gain, 0, 1, 1, 1, OFF_ON, NULL},
@@ -5418,8 +6165,15 @@ static void layout_other(UINT key)
         return;
     }
     if (k >= 0 && key == 'H' && piece_switch(g_layout.part, k)) {
+        static int bp_kept = BP_UNKNOWN;    /* the blueprints' choice, back when shown again */
         int *on = piece_switch(g_layout.part, k);
-        *on = !*on;
+        if (on == &g_floor.blueprints) {
+            if (*on)
+                bp_kept = *on;
+            *on = *on ? BP_OFF : bp_kept;
+        } else {
+            *on = !*on;
+        }
         layout_changed();
         return;
     }

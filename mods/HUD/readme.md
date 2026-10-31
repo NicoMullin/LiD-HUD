@@ -22,7 +22,9 @@ game shows its HUD.
   living Haters and monsters the game counts to judge a floor cleared, and how
   many the floor started with.
 - **Floor info:** the beasts, mushrooms, unopened chests and materials left on
-  the floor, and a line when the floor has a Fun Fungus.
+  the floor, and a line when the floor has a Fun Fungus or a Tengoku
+  blueprint. Blueprints still in their chests are known too: a line when one
+  is a ???, or each one named, as the game names them or by their real names.
 - **Rage:** "Rage: 63%", how far to the next rage gauge, and what the last hit
   gave.
 - **Bag space:** "Bag: 12 / 20", red when the bag is full.
@@ -44,7 +46,12 @@ colour and a dark background.
   each hand's weapon boxes, the decals, the quick items box, the timer, boss
   health, the floor name, messages, item pick-ups, the reticle, subtitles and
   the button guide can be moved, resized and hidden too, in the same layout
-  mode. Parts not on the screen show a stand-in box to place them by.
+  mode. Parts not on the screen show a stand-in box to place them by. From
+  plugin 0.12.2 the quick items' buttons (under the item box, with its
+  "Back") are a part of their own, which goes with the item box and can be
+  hidden on its own, and a smaller Messages window keeps its text centred.
+  From plugin 0.12.3 the button guide's escalator text (the next floor and
+  its name) is sized with the rest of the guide.
 
 ## Setting it up in the game
 

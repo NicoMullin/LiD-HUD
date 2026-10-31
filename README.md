@@ -27,6 +27,12 @@ for the [LiD Plugin Loader](https://github.com/NicoMullin/LiD-Plugin-Loader).
 - **Floor info** (0.9.0). Under the enemies counter: the beasts, mushrooms,
   unopened chests and materials left on the floor, and a line when the floor has a
   Fun Fungus. Each line can be switched off; never in the Waiting Room.
+  (0.12.1) An orange line when a Tengoku blueprint is on the floor, from the
+  moment it loads: the game rolls what every chest holds then, and the line
+  stays while that chest is shut or the blueprint lies about. The other
+  blueprints too, set by `blueprints`: a line when one is a ???, or a line
+  each, named as the game names them (??? ones as ???) or by their real
+  names.
 - **Low durability** (0.10.0). A durability number turns a warning colour
   below one % and a low colour below another, and can flash when low.
 - **Bag space** (0.10.0). "Bag: 12 / 20" - turns red when the bag is full.
@@ -51,7 +57,14 @@ for the [LiD Plugin Loader](https://github.com/NicoMullin/LiD-Plugin-Loader).
   weapon boxes (with their numbers), the decals, the quick items box, the
   timer, boss health, the floor name, messages, item pick-ups, the reticle,
   subtitles and the button guide. Parts that are not on the screen get a
-  stand-in box, so they can be placed too.
+  stand-in box, so they can be placed too. (0.12.2) The quick items'
+  buttons (the guide under the item box, with its "Back") are a part of
+  their own: they go with the item box, and can be hidden or moved apart
+  from it. A smaller Messages window keeps its quest text centred, and the
+  button guide along the bottom moves now too (in 0.12.0 and 0.12.1 it was
+  never hooked). (0.12.3) Text a part draws at a place on the screen, such
+  as the button guide's next floor and its name at an escalator, is sized
+  with its part, not only moved.
 
 ## Moving things in the game
 
@@ -205,8 +218,15 @@ fun_fungus=1        ; "Fun Fungus on this floor", when there is one
 mushrooms=1         ; mushrooms left
 colour=FFFFFF       ; text colour, red, green, blue in hex
 fungus_colour=50FF50  ; the Fun Fungus line's own colour
+tengoku=1           ; "Tengoku blueprint on this floor", while there is one
+tengoku_colour=FF9628  ; that line's own colour
+blueprints=1        ; the blueprints still on the floor: 0 none, 1 a line
+                    ; when one is a ???, 2 a line each as the game names it
+                    ; (??? ones as ???), 3 a line each by its real name
+blueprint_colour=3CE6FF  ; their lines' own colour
 beasts_x=0          ; one line moved on its own, on top of x and y: beasts_,
-beasts_y=0          ; mushrooms_, chests_, materials_ and fungus_
+beasts_y=0          ; mushrooms_, chests_, materials_, fungus_, tengoku_ and
+                    ; blueprints_
 
 [rage]
 show=1              ; "Rage: 63%" - how full the rage gauge is
@@ -262,7 +282,12 @@ health_y=0
 health_size=100     ; and sized, % (30 to 300), around the middle of the screen
 ; the same four for: notices, weapons_left, weapons_right, decals, quick_use,
 ; timer, boss_health, floor_title, messages, item_info, reticle, subtitles,
-; button_guide
+; button_guide, quick_use_buttons (its move and size are on top of quick_use's)
+
+[debug]
+trace=0             ; 1: log each place in the game that draws, once, with the
+                    ; part drawing at the time - to find a window that does
+                    ; not follow its part
 ```
 
 The plugin also keeps `<part>_seen` lines and a `seen_version` in
